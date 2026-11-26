@@ -51,6 +51,26 @@ export async function put(store, key, value) {
   return done(tx);
 }
 
+export async function putMany(store, entries) {
+  if (!entries.length) return;
+  const packed = [];
+  for (const [k, v] of entries) packed.push([k, await pack(v)]);
+  const db = await openDB();
+  const tx = db.transaction(store, 'readwrite');
+  const os = tx.objectStore(store);
+  for (const [k, v] of packed) os.put(v, k);
+  return done(tx);
+}
+
+export async function delMany(store, keys) {
+  if (!keys.length) return;
+  const db = await openDB();
+  const tx = db.transaction(store, 'readwrite');
+  const os = tx.objectStore(store);
+  for (const k of keys) os.delete(k);
+  return done(tx);
+}
+
 export async function get(store, key) {
   const db = await openDB();
   return new Promise((resolve, reject) => {

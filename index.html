@@ -82,6 +82,7 @@
             <button id="playAlbum" class="hw-flat primary">▶ PLAY</button>
             <button id="openBooklet" class="hw-flat">BOOKLET</button>
             <button id="flipCase" class="hw-flat">FLIP</button>
+            <button id="keepAlbum" class="hw-flat" hidden>KEEP ON PHONE</button>
             <button id="removeAlbum" class="hw-flat danger">REMOVE</button>
           </div>
         </div>
@@ -124,6 +125,18 @@
     <p class="silk">SOUND</p>
     <label class="check"><input type="checkbox" id="setSounds"> Button and disc sounds</label>
     <label>Sound effects <input type="range" id="setFx" min="0" max="100"></label>
+    <p class="silk">PLEX</p>
+    <p id="plexStatus" class="dim"></p>
+    <div id="plexLink" class="plex-link" hidden>
+      <p class="dim">On any device, open <a href="https://plex.tv/link" target="_blank" rel="noopener">plex.tv/link</a>, sign in, and type this code:</p>
+      <p id="plexCode" class="plex-code"></p>
+      <p class="dim small">Waiting for Plex… you can switch apps and come back.</p>
+    </div>
+    <div class="row-buttons">
+      <button id="plexConnect" class="hw-flat primary">CONNECT TO PLEX</button>
+      <button id="plexSync" class="hw-flat" hidden>SYNC NOW</button>
+      <button id="plexDisconnect" class="hw-flat danger" hidden>DISCONNECT</button>
+    </div>
     <p class="silk">STORAGE</p>
     <p id="storageText" class="dim"></p>
     <button id="persistButton" class="hw-flat">KEEP MY MUSIC SAFE</button>

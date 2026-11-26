@@ -3,11 +3,14 @@ import { THEME, setTheme, albumScheme, autoThemeName, SCHEME_KEYS, albumPalette,
 import { Sky, paintCaseFront, paintCaseBack, paintCaseBackImage, paintSpine, fmtTime } from './paint.js';
 import { DiscView } from './disc.js';
 import { LcdView } from './lcd.js';
-import { lib, loadLibrary, importFiles, albumTracks, sortedAlbums, imageFor, imageBlob, audioBlob, deleteAlbum, cachedLevels, saveLevels } from './library.js';
+import { lib, loadLibrary, importFiles, albumTracks, sortedAlbums, imageFor, imageBlob, audioBlob, deleteAlbum, cachedLevels, saveLevels,
+         applyPlexLibrary, forgetPlex, keepAlbum, unkeepAlbum, saveTrack } from './library.js';
+import * as plexApi from './plex.js';
+const { plex } = plexApi;
 import { lyricsFor, unlockSounds, playSound, sounds, analyseLevels } from './audiofx.js';
 import { storageInfo, askPersist } from './db.js';
 
-const VERSION = '1.0.2';
+const VERSION = '1.1';
 const $ = id => document.getElementById(id);
 
 // ---------------------------------------------------------------- settings
@@ -30,6 +33,7 @@ const state = {
   position: () => (current ? audio.currentTime * 1000 : 0),
 };
 let current = null;          // the playing track
+let retried = false;         // a stream that failed once gets one retry after re-finding the server
 let order = [];              // play order: every song, album by album
 let energy = 0;
 let scheme = { from: null, to: null, t: 1, source: [[], null] };
@@ -128,11 +132,25 @@ async function playTrack(id, { autoplay = true, animate = true } = {}) {
                  cdr: null, ...(discImg ? { forceArt: true } : {}) }, animate);
   if (discImg) disc.setMode('art'); else disc.setMode(settings.disc);
   schemeFor(track);
-  const blob = await audioBlob(id);
-  if (!blob) { toast('This song’s file is missing.'); return; }
-  if (audioUrl) URL.revokeObjectURL(audioUrl);
-  audioUrl = URL.createObjectURL(blob);
-  audio.src = audioUrl;
+  const streamed = track.source === 'plex' && !track.local;
+  const blob = streamed ? null : await audioBlob(id);
+  if (audioUrl) { URL.revokeObjectURL(audioUrl); audioUrl = null; }
+  if (streamed) {
+    if (!plex.connected) { toast('Connect to Plex in Settings to play this.'); return; }
+    audio.src = plexApi.streamUrl(track);
+    retried = false;
+  } else {
+    if (!blob) { toast('This song’s file is missing.'); return; }
+    audioUrl = URL.createObjectURL(blob);
+    audio.src = audioUrl;
+  }
+  if (track.source === 'plex' && track.lyrics == null) {
+    plexApi.fetchLyrics(track).then(text => {
+      track.lyrics = text || '';
+      saveTrack(track);
+      if (current === track) state.lyrics = lyricsFor(track.lyrics, track.duration);
+    });
+  }
   if (autoplay) audio.play().catch(() => {});
   renderNow();
   markPlaying();
@@ -141,9 +159,10 @@ async function playTrack(id, { autoplay = true, animate = true } = {}) {
   // The level meter (and the glow) need the song's loudness: cached, or worked out in the background.
   const levels = await cachedLevels(id);
   if (levels) { if (current === track) state.levels = levels; }
-  else setTimeout(async () => {
+  else if (settings.meter && (blob || (track.size && track.size < 60e6))) setTimeout(async () => {
     try {
-      const lv = await analyseLevels(blob);
+      if (current !== track) return;
+      const lv = await analyseLevels(blob || await plexApi.fetchSong(track));
       if (lv.length) { await saveLevels(id, lv); if (current === track) state.levels = lv; }
     } catch (e) { /* no meter for this one */ }
   }, 1500);
@@ -186,7 +205,23 @@ audio.addEventListener('loadedmetadata', () => {
   if (isFinite(audio.duration)) state.duration = audio.duration * 1000;
   updatePositionState();
 });
-audio.addEventListener('error', () => { if (current) { state.state = 'error'; toast('Couldn’t play this song. iPhone may not support its format.'); } });
+audio.addEventListener('error', async () => {
+  if (!current) return;
+  if (current.source === 'plex' && !current.local && !retried) {
+    retried = true;
+    const t = current, at = audio.currentTime;
+    try {
+      await plexApi.reconnect();
+      if (current !== t) return;
+      audio.src = plexApi.streamUrl(t);
+      audio.addEventListener('loadedmetadata', () => { audio.currentTime = at; }, { once: true });
+      audio.play().catch(() => {});
+      return;
+    } catch (e) { toast(e.message, 8); }
+  }
+  state.state = 'error';
+  toast(current.source === 'plex' && !current.local ? 'Couldn’t stream this song from Plex. Is your computer on?' : 'Couldn’t play this song. iPhone may not support its format.', 6);
+});
 
 function setPlayIcons(playing) {
   for (const id of ['playIcon', 'miniPlayIcon']) $(id).setAttribute('href', playing ? '#i-pause' : '#i-play');
@@ -402,10 +437,22 @@ function openAlbum(key) {
   $('albumMeta').textContent = [album.artist, album.year, `${tracks.length} song${tracks.length === 1 ? '' : 's'}`, minutes ? `${minutes} min` : '']
     .filter(Boolean).join(' · ');
   $('openBooklet').hidden = false;
+  updateAlbumButtons(album);
   $('caseFlip').classList.remove('flipped');
   trackRows($('albumList'), tracks);
   showPage('album');
   requestAnimationFrame(() => renderAlbumCase(album));
+}
+
+function updateAlbumButtons(album) {
+  const fromPlex = album.source === 'plex';
+  $('removeAlbum').hidden = fromPlex;
+  $('keepAlbum').hidden = !fromPlex;
+  if (fromPlex) {
+    const kept = albumTracks(album).every(t => t.local);
+    $('keepAlbum').textContent = kept ? 'REMOVE FROM PHONE' : 'KEEP ON PHONE';
+    $('keepAlbum').classList.toggle('danger', kept);
+  }
 }
 
 function showPage(name) {
@@ -506,6 +553,70 @@ picker.addEventListener('change', async () => {
   }
 });
 
+// ---------------------------------------------------------------- progress overlay (imports, Plex)
+
+async function busy(task, doneText) {
+  $('importer').hidden = false;
+  $('importBar').style.width = '8%'; $('importName').textContent = '';
+  try {
+    const result = await task(p => {
+      $('importStage').textContent = p.stage + (p.total ? ` (${Math.min(Math.floor(p.done) + 1, p.total)} of ${p.total})` : '');
+      $('importName').textContent = p.name || '';
+      $('importBar').style.width = p.total ? `${(p.done / p.total) * 100}%` : '8%';
+    });
+    if (doneText) toast(typeof doneText === 'function' ? doneText(result) : doneText, 5);
+    return result;
+  } catch (e) {
+    console.error(e);
+    toast(e.message || String(e), 10);
+    return null;
+  } finally { $('importer').hidden = true; }
+}
+
+// ---------------------------------------------------------------- Plex
+
+let linking = null;
+function plexUi() {
+  $('plexStatus').textContent = plex.connected
+    ? `Connected to “${plex.serverName}”. ${[...lib.albums.values()].filter(a => a.source === 'plex').length} albums stream from it.`
+    : 'Stream your Plex music library instead of storing it on your phone.';
+  $('plexConnect').hidden = plex.connected || !!linking;
+  $('plexSync').hidden = $('plexDisconnect').hidden = !plex.connected;
+  $('plexLink').hidden = !linking;
+}
+
+async function syncPlex(quiet) {
+  const run = async p => { const r = await applyPlexLibrary(await plexApi.fetchLibrary(p)); rebuildOrder(); renderNow(); if (!$('page-library').hidden) renderShelf(); return r; };
+  if (quiet) {
+    try { await run(() => {}); } catch (e) { console.warn('Plex sync later:', e.message); }
+  } else {
+    await busy(run, r => `Plex is synced. ${[...lib.albums.values()].filter(a => a.source === 'plex').length} albums ready to stream.`);
+  }
+  plexUi();
+  if (!$('settings').hidden) openSettings();
+}
+
+$('plexConnect').onclick = async () => {
+  playSound('press');
+  try {
+    linking = await plexApi.startLink();
+    $('plexCode').textContent = linking.code;
+    plexUi();
+    const ok = await linking.wait();
+    linking = null;
+    plexUi();
+    if (ok) { toast(`Connected to ${plex.serverName}!`); await syncPlex(false); }
+  } catch (e) { linking = null; plexUi(); toast(e.message || 'Couldn’t reach Plex.', 8); }
+};
+$('plexSync').onclick = () => { playSound('press'); syncPlex(false); };
+$('plexDisconnect').onclick = async () => {
+  if (!confirm('Disconnect from Plex? Its albums leave your shelf (albums you kept on the phone too). Your Plex server isn’t changed.')) return;
+  if (current && current.source === 'plex') { audio.pause(); audio.removeAttribute('src'); current = null; idleText(); }
+  plexApi.disconnect();
+  await forgetPlex();
+  rebuildOrder(); renderNow(); plexUi();
+};
+
 // ---------------------------------------------------------------- settings sheet
 
 async function openSettings() {
@@ -515,10 +626,13 @@ async function openSettings() {
   $('version').textContent = `Kurukuru CD for iPhone · version ${VERSION}`;
   const info = await storageInfo();
   const mb = n => (n / 1048576).toFixed(n > 1048576 * 100 ? 0 : 1);
-  $('storageText').textContent = `${lib.albums.size} albums, ${lib.tracks.size} songs · using ${mb(info.usage)} MB` +
+  const local = [...lib.albums.values()].filter(a => a.source !== 'plex').length;
+  const kept = [...lib.tracks.values()].filter(t => t.source !== 'plex' || t.local).length;
+  $('storageText').textContent = `${local} albums imported, ${kept} songs on this phone · using ${mb(info.usage)} MB` +
     (info.quota ? ` of about ${(info.quota / 1073741824).toFixed(1)} GB available` : '') +
     (info.persisted ? ' · kept safe ✓' : ' · iPhone may clear it if storage runs very low');
   $('persistButton').hidden = info.persisted;
+  plexUi();
   $('settings').hidden = false;
 }
 function settingChanged() {
@@ -561,6 +675,18 @@ $('caseFlip').onclick = () => { playSound('press'); $('caseFlip').classList.togg
 $('flipCase').onclick = () => $('caseFlip').classList.toggle('flipped');
 $('playAlbum').onclick = () => { const a = lib.albums.get(shownAlbum); const t = a && albumTracks(a)[0]; if (t) { unlockSounds(); playTrack(t.id); } };
 $('openBooklet').onclick = openBooklet;
+$('keepAlbum').onclick = async () => {
+  const album = lib.albums.get(shownAlbum);
+  if (!album) return;
+  playSound('press');
+  if (albumTracks(album).every(t => t.local)) {
+    await unkeepAlbum(album.key);
+    toast('Removed from your phone. It still streams from Plex.');
+  } else {
+    await busy(p => keepAlbum(album.key, p), `“${album.album}” is saved on your phone and plays without a connection.`);
+  }
+  updateAlbumButtons(album);
+};
 $('removeAlbum').onclick = async () => {
   const album = lib.albums.get(shownAlbum);
   if (!album || !confirm(`Remove “${album.album}” and its songs from Kurukuru? (The files in your Files app aren’t touched.)`)) return;
@@ -651,11 +777,12 @@ async function start() {
     const lastPlayed = JSON.parse(localStorage.getItem('kurukuru-last') || 'null');
     if (lastPlayed && lib.tracks.has(lastPlayed.id)) await playTrack(lastPlayed.id, { autoplay: false, animate: false });
   } catch (e) { /* ignore */ }
+  if (plex.connected) syncPlex(true);
   setInterval(() => { if (settings.theme === 'Auto' && autoThemeName() !== THEME.name) applyTheme(); }, 60000);
   setInterval(updatePositionState, 5000);
   requestAnimationFrame(frame);
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 document.addEventListener('visibilitychange', () => { last = performance.now(); });
-window.kurukuru = { lib, state, settings };   // handy for debugging in Web Inspector
+window.kurukuru = { lib, state, settings, plex: plexApi };   // handy for debugging in Web Inspector
 start();

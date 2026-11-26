@@ -2,6 +2,7 @@
 import * as db from './db.js';
 import { readTags, probeDuration } from './tags.js';
 import { listZip, extract } from './zip.js';
+import * as plex from './plex.js';
 
 export const AUDIO = { mp3: 'audio/mpeg', m4a: 'audio/mp4', mp4: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac',
                        ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg', wav: 'audio/wav', aif: 'audio/aiff', aiff: 'audio/aiff' };
@@ -48,7 +49,11 @@ export async function imageFor(id) {
   if (!id) return null;
   if (bitmaps.has(id)) return bitmaps.get(id);
   const promise = (async () => {
-    const blob = await db.get('images', id);
+    let blob = await db.get('images', id);
+    if (!blob && id.startsWith('plexart:') && plex.plex.connected) {
+      try { blob = await plex.fetchArt(id.slice(8)); await db.put('images', id, blob); }
+      catch (e) { bitmaps.delete(id); return null; }   // try again later (e.g. back on home Wi-Fi)
+    }
     if (!blob) return null;
     try { return await createImageBitmap(blob); }
     catch (e) {
@@ -62,7 +67,11 @@ export async function imageFor(id) {
   return promise;
 }
 
-export async function imageBlob(id) { return id ? db.get('images', id) : null; }
+export async function imageBlob(id) {
+  if (!id) return null;
+  if (id.startsWith('plexart:')) await imageFor(id);
+  return db.get('images', id);
+}
 
 async function storeImage(blob) {
   const id = 'img-' + db.uid();
@@ -204,3 +213,62 @@ export async function audioBlob(id) { return db.get('audio', id); }
 
 export async function cachedLevels(id) { return db.get('extras', 'levels:' + id); }
 export async function saveLevels(id, levels) { return db.put('extras', 'levels:' + id, levels); }
+
+// ---------------------------------------------------------------- Plex
+
+// Replaces the Plex part of the library with a fresh listing, keeping songs you saved on the phone.
+export async function applyPlexLibrary({ albums, tracks }) {
+  const oldTracks = [...lib.tracks.values()].filter(t => t.source === 'plex');
+  const fresh = new Set(tracks.map(t => t.id));
+  for (const t of tracks) {
+    const old = lib.tracks.get(t.id);
+    if (old) { t.local = old.local; if (old.lyrics != null) t.lyrics = old.lyrics; }
+  }
+  const gone = oldTracks.filter(t => !fresh.has(t.id)).map(t => t.id);
+  const goneAlbums = [...lib.albums.values()].filter(a => a.source === 'plex' && !albums.some(n => n.key === a.key)).map(a => a.key);
+  await db.delMany('audio', gone);
+  await db.delMany('tracks', gone);
+  await db.delMany('albums', goneAlbums);
+  await db.putMany('tracks', tracks.map(t => [t.id, t]));
+  await db.putMany('albums', albums.map(a => [a.key, a]));
+  for (const id of gone) lib.tracks.delete(id);
+  for (const k of goneAlbums) lib.albums.delete(k);
+  for (const t of tracks) lib.tracks.set(t.id, t);
+  for (const a of albums) lib.albums.set(a.key, a);
+  return { added: tracks.length - (oldTracks.length - gone.length), removed: gone.length };
+}
+
+export async function forgetPlex() {
+  const ids = [...lib.tracks.values()].filter(t => t.source === 'plex').map(t => t.id);
+  const keys = [...lib.albums.values()].filter(a => a.source === 'plex').map(a => a.key);
+  await db.delMany('audio', ids); await db.delMany('tracks', ids); await db.delMany('albums', keys);
+  for (const id of ids) lib.tracks.delete(id);
+  for (const k of keys) lib.albums.delete(k);
+}
+
+// Downloads a Plex album so it plays without a connection.
+export async function keepAlbum(key, progress = () => {}) {
+  const album = lib.albums.get(key);
+  const tracks = albumTracks(album).filter(t => !t.local);
+  let i = 0;
+  for (const t of tracks) {
+    progress({ stage: 'Saving to your phone', done: i, total: tracks.length, name: t.title });
+    const blob = await plex.fetchSong(t, f => progress({ stage: 'Saving to your phone', done: i + f, total: tracks.length, name: t.title }));
+    await db.put('audio', t.id, blob);
+    if (t.lyrics == null) t.lyrics = (await plex.fetchLyrics(t)) || '';
+    t.local = true;
+    await db.put('tracks', t.id, t);
+    i++;
+  }
+}
+
+export async function unkeepAlbum(key) {
+  for (const t of albumTracks(lib.albums.get(key))) {
+    if (!t.local) continue;
+    await db.del('audio', t.id);
+    t.local = false;
+    await db.put('tracks', t.id, t);
+  }
+}
+
+export async function saveTrack(t) { return db.put('tracks', t.id, t); }
