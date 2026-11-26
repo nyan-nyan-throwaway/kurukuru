@@ -67,6 +67,7 @@
       </div>
       <div class="shelf-tools">
         <input id="search" type="search" placeholder="Search" autocomplete="off">
+        <button id="sortButton" class="hw-flat">SORT</button>
         <button id="viewToggle" class="hw-flat"><i class="lamp"></i>SPINES</button>
         <button id="newCdr" class="hw-flat">+ CD-R</button>
       </div>
@@ -86,7 +87,7 @@
           <div class="album-buttons">
             <button id="playAlbum" class="hw-flat primary">▶ PLAY</button>
             <button id="openBooklet" class="hw-flat">BOOKLET</button>
-            <button id="cdrAdd" class="hw-flat" hidden>+ ADD SONGS</button>
+            <button id="cdrAdd" class="hw-flat" hidden>EDIT SONGS</button>
             <button id="flipCase" class="hw-flat">FLIP</button>
             <button id="albumMore" class="hw-flat" aria-label="More">• • •</button>
           </div>
@@ -197,12 +198,17 @@
     <p class="silk">DOODLES <span class="dim small">· up to 4</span></p><div id="cdrDoodles" class="doodles"></div>
     <div class="row-buttons"><button id="doodleRandom" class="hw-flat">SURPRISE ME</button><button id="doodleNone" class="hw-flat">NO DOODLES</button></div>
     <p class="silk">CASE</p><div id="cdrCases" class="swatches"></div>
+    <p class="silk">PHOTO <span class="dim small">· printed at home and taped in the case</span></p>
+    <canvas id="cdrPhotoPreview" class="photo-preview" hidden></canvas>
+    <div class="row-buttons"><button id="cdrPhotoAdd" class="hw-flat">ADD A PHOTO</button><button id="cdrPhotoRemove" class="hw-flat" hidden>REMOVE</button></div>
+    <input id="cdrPhotoPicker" type="file" accept="image/*" hidden>
   </div>
 </div>
 
 <div id="songPicker" class="overlay sheet" hidden>
-  <div class="overlay-head"><button id="pickCancel" class="hw-flat">CANCEL</button><b id="pickTitle">ADD SONGS</b><button id="pickAdd" class="hw-flat primary">ADD</button></div>
+  <div class="overlay-head"><button id="pickCancel" class="hw-flat">CANCEL</button><b id="pickTitle">EDIT SONGS</b><button id="pickAdd" class="hw-flat primary">SAVE</button></div>
   <input id="pickSearch" type="search" placeholder="Search songs, artists or albums" autocomplete="off">
+  <div class="pick-filter"><button id="pickAll" class="hw-flat lit"><i class="lamp lit"></i>ALL SONGS</button><button id="pickOn" class="hw-flat"><i class="lamp"></i>ON THIS CD-R</button></div>
   <p id="pickInfo" class="dim small"></p>
   <ol id="pickList" class="tracks pick"></ol>
 </div>

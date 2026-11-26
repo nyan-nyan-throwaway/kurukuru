@@ -331,3 +331,21 @@ input.swatch[type=color]::-webkit-color-swatch { border: 0; border-radius: 50%; 
 .karaoke .hw-flat.primary { background: var(--accent); border-color: transparent; }
 .menu-item.has-it { color: var(--accent); font-weight: 700; }
 .menu-item.has-it small { color: var(--ink-soft); font-weight: 400; }
+
+.photo-preview { display: block; width: 220px; height: 220px; margin: 4px auto 8px; }
+
+/* ---------------------------------------------------------------- CD-R editing */
+.tracks li .rm, .tracks li .grip { flex: none; border: 0; background: none; color: var(--ink-soft); font-size: 15px; width: 30px; height: 34px; padding: 0; }
+.tracks li .rm { color: #d4566f; font-size: 17px; font-weight: 700; }
+.tracks li .grip { cursor: grab; touch-action: none; font-size: 18px; letter-spacing: -1px; }
+.tracks li.dragging { opacity: .85; background: color-mix(in srgb, var(--accent) 16%, transparent); box-shadow: 0 6px 18px rgba(30,20,60,.25); position: relative; z-index: 2; }
+.pick-filter { display: flex; gap: 8px; margin: 0 0 6px; }
+.pick li.burned.on .d { color: var(--accent); }
+.pick li.burned:not(.on) .tt b { text-decoration: line-through; opacity: .6; }
+.pick li.burned:not(.on) .d { color: #d4566f; }
+.pick-head { list-style: none; font-size: 11px; letter-spacing: .12em; color: var(--ink-soft); padding: 10px 4px 4px; font-weight: 700; }
+.toast button { margin-left: 10px; background: none; border: 1px solid currentColor; color: inherit; border-radius: 8px; padding: 2px 8px; font: inherit; font-weight: 700; }
+/* search gets its own row; sort, spines and + CD-R share the row below */
+.shelf-tools { flex-wrap: wrap; }
+.shelf-tools #search { flex: 1 1 100%; }
+.shelf-tools .hw-flat { flex: 1 1 0; white-space: nowrap; }

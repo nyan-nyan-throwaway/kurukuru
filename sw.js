@@ -1,5 +1,5 @@
 // Keeps the app itself available offline. (Your music is in IndexedDB, not here.)
-const CACHE = 'kurukuru-v2.0';
+const CACHE = 'kurukuru-v2.2';
 const SHELL = ['./', 'index.html', 'style.css', 'manifest.webmanifest', 'icons/icon.svg', 'icons/apple-touch-icon.png',
   'icons/icon-192.png', 'icons/icon-512.png', 'js/app.js', 'js/theme.js', 'js/paint.js', 'js/disc.js', 'js/lcd.js',
   'js/library.js', 'js/db.js', 'js/tags.js', 'js/zip.js', 'js/audiofx.js', 'js/plex.js', 'js/backup.js', 'js/cdrsync.js', 'js/artsync.js', 'js/doodles.js', 'js/mixer.js', 'js/stickers.js', 'js/shells.js'];
