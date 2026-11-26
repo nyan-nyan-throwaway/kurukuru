@@ -63,8 +63,10 @@ export class LcdView {
     for (const [text, flag] of [['SHUF', s.shuffle], ['RPT', s.repeat], ['LYRICS', !!(s.lyrics && s.lyrics.length && s.showLyrics)]]) {
       ctx.fillStyle = lit(flag); ctx.fillText(text, x, y + 1); x += ctx.measureText(text).width + 9;
     }
-    ctx.strokeStyle = lit(s.trackCount); ctx.lineWidth = 1.3; roundRect(ctx, x1 - 26, y - 1, 26, 14, 4); ctx.stroke();
-    ctx.fillStyle = lit(s.trackCount); ctx.textAlign = 'center'; ctx.fillText('CD', x1 - 13, y + 1); ctx.textAlign = 'left';
+    const badge = s.disc ? `CD${s.disc}` : 'CD';   // which disc of a multi-disc album is in
+    const bw = Math.max(26, ctx.measureText(badge).width + 12);
+    ctx.strokeStyle = lit(s.trackCount); ctx.lineWidth = 1.3; roundRect(ctx, x1 - bw, y - 1, bw, 14, 4); ctx.stroke();
+    ctx.fillStyle = lit(s.trackCount); ctx.textAlign = 'center'; ctx.fillText(badge, x1 - bw / 2, y + 1); ctx.textAlign = 'left';
     spacing(ctx, 0);
     y += 21;
     // Row 2: track number and time.

@@ -346,6 +346,38 @@ export const CDR_DYES = { gold: ['Gold', '#f7e7a8', '#dcb85c', '#a8802c'], blue:
   green: ['Green', '#cff2dc', '#4fae84', '#246b4f'], silver: ['Silver', '#f6f7fb', '#c9ccd6', '#8f95a5'],
   pink: ['Pink', '#ffd9ea', '#ef8fbb', '#b54d80'], black: ['Black', '#5f5d6c', '#2b2a34', '#121117'] };
 
+export const MARKERS = { black: ['Black', '#1d1b22'], blue: ['Blue', '#2347b5'], red: ['Red', '#c8283c'],
+  purple: ['Purple', '#6a2fb5'], green: ['Green', '#1f7a4a'], silver: ['Silver', '#ecebf3'] };
+const MARKER_FONT = '"Marker Felt","Chalkboard SE","Comic Neue","Comic Sans MS","Patrick Hand","Hiragino Maru Gothic ProN",cursive';
+const markerFont = px => `bold ${Math.max(4, px).toFixed(1)}px ${MARKER_FONT}`;
+const markerInk = cdr => (MARKERS[cdr.marker] || MARKERS.black)[1];
+const cdrSeed = cdr => crc32(String(cdr.id || cdr.title || ''));
+
+// Felt-tip lettering: chunky, slightly wobbly letters on a tilted line.
+export function handwrite(ctx, text, cx, cy, maxW, size, color, seed, angle = 0, align = 'center') {
+  const r = rng(seed);
+  ctx.save();
+  ctx.font = markerFont(size);
+  while (ctx.measureText(text).width > maxW && size > 6) { size -= .5; ctx.font = markerFont(size); }
+  text = elide(ctx, text, maxW);
+  const total = ctx.measureText(text).width;
+  ctx.translate(cx, cy); ctx.rotate(rad(angle));
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const faint = rgba(color, .43);
+  let x = align === 'center' ? -total / 2 : 0;
+  for (const ch of [...text]) {
+    const w = ctx.measureText(ch).width;
+    ctx.save();
+    ctx.translate(x + w / 2, r.uniform(-size * .06, size * .06));
+    ctx.rotate(rad(r.uniform(-5, 5)));
+    ctx.fillStyle = faint; ctx.fillText(ch, .35, .25);
+    ctx.fillStyle = color; ctx.fillText(ch, 0, 0);
+    ctx.restore();
+    x += w * r.uniform(.97, 1.04);
+  }
+  ctx.restore();
+}
+
 export function paintCdrFace(ctx, R, cdr) {
   const [, light, mid, dark] = CDR_DYES[cdr.dye] || CDR_DYES.gold;
   const base = ctx.createRadialGradient(0, 0, 0, 0, 0, R);
@@ -355,7 +387,92 @@ export function paintCdrFace(ctx, R, cdr) {
   ctx.beginPath(); ctx.arc(0, 0, outer, 0, TAU); ctx.arc(0, 0, R * .35, 0, TAU, true);
   ctx.fillStyle = rgba(dark, .27); ctx.fill('evenodd');
   ctx.strokeStyle = rgba(dark, .43); ctx.lineWidth = .8; circle(ctx, 0, 0, outer); ctx.stroke();
+  const sheen = ctx.createConicGradient(rad(-30), 0, 0);
+  ['#ff9ad5', '#9ad7ff', '#fff59a', '#a6ffcf', '#ff9ad5'].forEach((c, i) => sheen.addColorStop(i / 4, rgba(c, .16)));
+  ctx.fillStyle = sheen; circle(ctx, 0, 0, R); ctx.fill();
   textOnArc(ctx, 'CD-R  700MB  80min  ·  RECORDABLE', R * .9, 180, font(R * .055, true), rgba(dark, .6), false);
+  const ink = markerInk(cdr), seed = cdrSeed(cdr);
+  handwrite(ctx, cdr.title || 'Mix', 0, -R * .56, R * 1.25, R * .19, ink, seed, -7);
+  if (cdr.date) handwrite(ctx, cdr.date, R * .36, R * .6, R * .6, R * .1, ink, seed + 1, -4);
+}
+
+// A slim CD-R case (172 x 178 card space): black tray with the disc showing through clear plastic.
+export function paintSlimCase(ctx, cdr) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(14,10,29,.12)'; roundRect(ctx, 9, 9, 161, 169, 8); ctx.fill();
+  ctx.fillStyle = '#1e1c24'; ctx.strokeStyle = '#58546a'; ctx.lineWidth = 1.4;
+  roundRect(ctx, 5, 3, 159, 165, 6); ctx.fill(); ctx.stroke();
+  const R = 72;
+  ctx.save();
+  ctx.translate(84.5, 85.5);
+  ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.arc(0, 0, R * .155, 0, TAU, true); ctx.clip('evenodd');
+  paintCdrFace(ctx, R, cdr);
+  ctx.fillStyle = 'rgba(236,236,248,.78)'; circle(ctx, 0, 0, R * .3); ctx.fill();
+  ctx.restore();
+  ctx.strokeStyle = 'rgba(255,255,255,.47)'; ctx.lineWidth = 1; circle(ctx, 84.5, 85.5, R); ctx.stroke();
+  ctx.fillStyle = '#3a3746'; circle(ctx, 84.5, 85.5, R * .14); ctx.fill();
+  ctx.save(); roundRect(ctx, 6, 4, 157, 163, 5); ctx.clip();
+  const sheen = ctx.createLinearGradient(20, 8, 150, 160);
+  sheen.addColorStop(0, 'rgba(255,255,255,.37)'); sheen.addColorStop(.3, 'rgba(255,255,255,.04)'); sheen.addColorStop(1, 'rgba(255,255,255,.18)');
+  ctx.fillStyle = sheen; ctx.fillRect(0, 0, 172, 178);
+  ctx.beginPath(); ctx.moveTo(30, 5); ctx.lineTo(52, 5); ctx.lineTo(160, 113); ctx.lineTo(160, 130); ctx.closePath();
+  ctx.fillStyle = 'rgba(255,255,255,.16)'; ctx.fill();
+  ctx.restore();
+  ctx.restore();
+}
+
+// The paper insert of a home-made CD-R: lined paper with a handwritten tracklist.
+export function paintCdrBack(ctx, cdr, titles) {
+  let ink = markerInk(cdr);
+  if (cdr.marker === 'silver') ink = MARKERS.black[1];
+  const seed = cdrSeed(cdr);
+  ctx.save();
+  ctx.fillStyle = 'rgba(14,10,29,.12)'; roundRect(ctx, 9, 9, 161, 169, 8); ctx.fill();
+  ctx.fillStyle = '#e8e6ef'; ctx.strokeStyle = '#9a95ab'; ctx.lineWidth = 1.4;
+  roundRect(ctx, 5, 3, 159, 165, 6); ctx.fill(); ctx.stroke();
+  const px = 10, py = 8, pw = 149, ph = 155;
+  ctx.fillStyle = '#fdfbf4'; ctx.fillRect(px, py, pw, ph);
+  ctx.strokeStyle = 'rgba(120,160,220,.35)'; ctx.lineWidth = .6; ctx.beginPath();
+  for (let y = py + 24; y < py + ph - 4; y += 9) { ctx.moveTo(px, y); ctx.lineTo(px + pw, y); }
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(220,90,110,.47)'; ctx.lineWidth = .7;
+  ctx.beginPath(); ctx.moveTo(px + 16, py); ctx.lineTo(px + 16, py + ph); ctx.stroke();
+  handwrite(ctx, cdr.title || 'Mix', px + pw / 2 + 6, py + 13, pw - 30, 12, ink, seed, -2);
+  let y = py + 24 - 1.5;
+  const rows = Math.floor((py + ph - 4 - y) / 9);
+  const shown = titles.length <= rows ? titles : titles.slice(0, rows - 1);
+  shown.forEach((title, n) => {
+    handwrite(ctx, `${n + 1}. ${title}`, px + 19, y + 4.5, pw - 26, 6.5, ink, seed + n + 3, rng(seed * 31 + n).uniform(-1.5, 1.5), 'left');
+    y += 9;
+  });
+  if (shown.length < titles.length) handwrite(ctx, `+ ${titles.length - shown.length} more…`, px + 19, y + 4.5, 80, 6.5, ink, seed + 99, 0, 'left');
+  if (!titles.length) handwrite(ctx, '(nothing burned yet)', px + 19, y + 4.5, 110, 6.5, rgba(ink, .5), seed + 5, 0, 'left');
+  if (cdr.date) handwrite(ctx, cdr.date, px + pw - 22, py + ph - 7, 40, 7, ink, seed + 7, -6);
+  ctx.save(); roundRect(ctx, 6, 4, 157, 163, 5); ctx.clip();
+  const sheen = ctx.createLinearGradient(20, 8, 150, 160);
+  sheen.addColorStop(0, 'rgba(255,255,255,.31)'); sheen.addColorStop(.3, 'rgba(255,255,255,.02)'); sheen.addColorStop(1, 'rgba(255,255,255,.16)');
+  ctx.fillStyle = sheen; ctx.fillRect(0, 0, 172, 178);
+  ctx.restore();
+  ctx.restore();
+}
+
+// Slim-case spine: black plastic with the title written in silver pen.
+export function paintCdrSpine(ctx, x, y, w, h, cdr, playing) {
+  const [, , mid] = CDR_DYES[cdr.dye] || CDR_DYES.gold;
+  const sx = x + w * .2, sw = w * .6;
+  ctx.save();
+  ctx.fillStyle = 'rgba(20,10,40,.16)'; roundRect(ctx, sx + 1.5, y + 1.5, sw, h, 2); ctx.fill();
+  const g = ctx.createLinearGradient(sx, 0, sx + sw, 0);
+  g.addColorStop(0, '#3a3746'); g.addColorStop(.5, '#1e1c24'); g.addColorStop(1, '#2c2a35');
+  ctx.fillStyle = g; roundRect(ctx, sx, y, sw, h, 2); ctx.fill();
+  ctx.strokeStyle = playing ? THEME.accent : 'rgba(0,0,0,.31)'; ctx.lineWidth = playing ? 1.6 : 1; ctx.stroke();
+  ctx.fillStyle = mid; circle(ctx, sx + sw / 2, y + 9, 4); ctx.fill();
+  ctx.save();
+  ctx.translate(sx + sw / 2, y + h - 8); ctx.rotate(-Math.PI / 2);
+  handwrite(ctx, cdr.title || 'Mix', 0, 0, h - 26, sw * .8, '#ecebf3', cdrSeed(cdr), 0, 'left');
+  ctx.restore();
+  ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(sx + 1, y + 2, .8, h - 4);
+  ctx.restore();
 }
 
 // ---------------------------------------------------------------- obi strips
@@ -385,6 +502,16 @@ export function obiPalette(album, artist, palette) {
                              : fromHsv((h + 200) % 360, 165, 225);
   const fourth = fromHsv((h + 55) % 360, 135, 250);
   return { seed, cols: [ink, second, third, fourth] };
+}
+
+// The obi's seed and four colours, after any edits from the obi editor.
+export function obiEffective(album, artist, palette, custom) {
+  const { seed, cols } = obiPalette(album, artist, palette);
+  if (custom && Array.isArray(custom.colors) && custom.colors.length) {
+    const chosen = custom.colors.filter(c => /^#[0-9a-f]{6}$/i.test(c)).map(parse);
+    return { seed, cols: [...chosen, ...cols].slice(0, 4) };
+  }
+  return { seed, cols };
 }
 
 function paintObiDesign(ctx, x, y, W, H, seed, cols, night, design) {
@@ -477,14 +604,24 @@ function paintObiDesign(ctx, x, y, W, H, seed, cols, night, design) {
 
 export function paintObi(ctx, x, y, W, H, album, artist, year, palette, night, custom = {}) {
   if (custom && custom.design === 'none') return;
-  const { seed, cols } = obiPalette(album, artist, palette);
   ctx.save();
   ctx.fillStyle = 'rgba(30,20,50,.18)'; ctx.fillRect(x + 1.5, y + 1, W, H);
+  if (custom && custom.imageObj) {   // a scanned obi
+    ctx.save(); ctx.beginPath(); ctx.rect(x, y, W, H); ctx.clip();
+    drawImageCover(ctx, custom.imageObj, x, y, W, H);
+    ctx.restore();
+    ctx.fillStyle = 'rgba(255,255,255,.47)'; ctx.fillRect(x, y, 1.2, H);
+    ctx.fillStyle = 'rgba(0,0,0,.12)'; ctx.fillRect(x + W - 1, y, 1, H);
+    ctx.restore();
+    return;
+  }
+  const { seed, cols } = obiEffective(album, artist, palette, custom);
   const info = paintObiDesign(ctx, x, y, W, H, seed, cols, night, custom && custom.design);
   const [tx, ty, tw, th] = info.top;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillStyle = col(info.topText);
-  ctx.font = font(W * .36, true); ctx.fillText('CD', tx + tw / 2, ty + th * .32);
+  const cdMark = custom && custom.discs > 1 ? `${custom.discs}CD` : 'CD';
+  ctx.font = font(W * (cdMark.length > 2 ? .27 : .36), true); ctx.fillText(cdMark, tx + tw / 2, ty + th * .32);
   ctx.font = font(Math.max(4, W * .17), true); ctx.fillText(elide(ctx, (custom && custom.label) || 'くるくる', W - 2), tx + tw / 2, ty + th * .75);
   const [ax, ay, aw, ah] = info.area;
   const artistText = artist && artist !== 'Unknown artist' ? artist : '';
@@ -552,7 +689,7 @@ export function paintCaseFront(ctx, group, image, palette, night, showObi = true
     hg.addColorStop(0, `rgba(255,255,255,${night ? .41 : .78})`); hg.addColorStop(1, col(darker(accent, 1.2)));
     ctx.fillStyle = hg; roundRect(ctx, 9, yy, 11, 9, 2); ctx.fill(); ctx.stroke();
   }
-  if (showObi && (group.album || group.artist)) paintObi(ctx, 4, 3.5, 40, 164, group.album, group.artist, group.year, palette, night, group.obi || {});
+  if (showObi && (group.album || group.artist)) paintObi(ctx, 4, 3.5, 40, 164, group.album, group.artist, group.year, palette, night, { ...(group.obi || {}), discs: group.discs });
   ctx.restore();
 }
 
@@ -592,7 +729,7 @@ export function paintCaseBack(ctx, group, tracks, palette, night) {
     ctx.fillStyle = col(ink); ctx.fillRect(x, ins[1], 13, ins[3]);
     ctx.fillStyle = col(second); ctx.fillRect(x, ins[1], 13, 16);
     ctx.fillStyle = col(readableOn(second)); ctx.font = font(5.5, true); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('CD', x + 6.5, ins[1] + 8);
+    ctx.fillText(group.discs > 1 ? `${group.discs}CD` : 'CD', x + 6.5, ins[1] + 8);
     verticalText(ctx, spineText, x + 6.5, ins[1] + 20, ins[3] - 26, 6.5, true, col(readableOn(ink)));
   }
   const left = 27, width = 115;
@@ -605,6 +742,11 @@ export function paintCaseBack(ctx, group, tracks, palette, night) {
   const line = 7.2, maxLines = Math.floor((136 - 37) / line);
   const shown = tracks.length <= maxLines ? tracks : tracks.slice(0, maxLines - 1);
   for (const [num, title, len] of shown) {
+    if (num === 'disc') {   // a heading between discs
+      ctx.fillStyle = col(ink); ctx.font = font(5.8, true); ctx.textAlign = 'left';
+      ctx.fillText(title, left, y); ctx.font = font(5.8);
+      y += line; continue;
+    }
     ctx.fillStyle = col(darker(ink, 1.15)); ctx.textAlign = 'left'; ctx.fillText(String(num).padStart(2, '0'), left, y);
     ctx.fillStyle = text; ctx.textAlign = 'right';
     if (len) ctx.fillText(fmtTime(len * 1000), left + width, y);
@@ -639,18 +781,20 @@ export function paintCaseBackImage(ctx, image, night) {
 export function paintSpine(ctx, x, y, w, h, group, palette, playing) {
   const { album = '', artist = '' } = group;
   const custom = group.obi || {};
-  const { seed, cols } = obiPalette(album, artist, palette);
+  const { seed, cols } = obiEffective(album, artist, palette, custom);
   ctx.save();
   ctx.fillStyle = 'rgba(20,10,40,.16)'; roundRect(ctx, x + 1.5, y + 1.5, w, h, 2.5); ctx.fill();
   roundRect(ctx, x, y, w, h, 2.5); ctx.save(); ctx.clip();
   const info = paintObiDesign(ctx, x, y, w, h, seed, cols, THEME.name === 'Night', custom.design !== 'none' ? custom.design : null);
   const [tx, ty, tw, th] = info.top;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillStyle = col(info.topText); ctx.font = font(8, true); ctx.fillText('CD', tx + tw / 2, ty + th * .32);
-  ctx.font = font(4.5, true); ctx.fillText('くるくる', tx + tw / 2, ty + th * .76);
+  const cdMark = group.discs > 1 ? `${group.discs}CD` : 'CD';
+  ctx.fillStyle = col(info.topText); ctx.font = font(cdMark.length > 2 ? 6.4 : 8, true); ctx.fillText(cdMark, tx + tw / 2, ty + th * .32);
+  ctx.font = font(4.5, true); ctx.fillText(elide(ctx, custom.label || 'くるくる', w - 2), tx + tw / 2, ty + th * .76);
   const [bx, by, bw, bh] = info.bottom;
   ctx.fillStyle = col(info.bottomText); ctx.font = font(4.6, true);
-  ctx.fillText('KRCD', bx + bw / 2, by + bh / 2 - 3); ctx.fillText(String(seed % 9000 + 1000), bx + bw / 2, by + bh / 2 + 3);
+  const codeLines = custom.catalogue ? custom.catalogue.split(/[\s-]/, 2) : ['KRCD', String(seed % 9000 + 1000)];
+  codeLines.forEach((l, i) => ctx.fillText(elide(ctx, l, w - 2), bx + bw / 2, by + bh / 2 + (i - (codeLines.length - 1) / 2) * 6));
   const [ax, ay, aw, ah] = info.area;
   const xc = ax + aw / 2;
   const artistText = artist && artist !== 'Unknown artist' ? artist : '';
@@ -692,18 +836,20 @@ export class Sky {
     else { g.addColorStop(0, col(mix('#b9defc', THEME.tint, .3))); g.addColorStop(1, col(mix('#fde6f2', THEME.tint2, .45))); }
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
     if (night) {
-      const { x: mx, y: my, r: mr } = this.moon || { x: W * .78, y: 60, r: 17 };
+      const { x: mx, y: my, r: mr, low } = this.moon || { x: W * .78, y: 60, r: 17 };
+      const cut = low ? .3 : -.3;   // a moon low in the sky is lit from above
       const halo = ctx.createRadialGradient(mx, my, 0, mx, my, mr * 4);
       halo.addColorStop(0, 'rgba(255,245,220,.27)'); halo.addColorStop(1, 'rgba(255,245,220,0)');
       ctx.fillStyle = halo; ctx.fillRect(0, 0, W, H);
-      // A crescent: the moon's disc with an offset disc taken away (clipped, so nothing outside the moon gets drawn).
-      ctx.save();
-      ctx.beginPath(); ctx.arc(mx, my, mr, 0, TAU); ctx.clip();
-      ctx.beginPath(); ctx.arc(mx, my, mr, 0, TAU);
-      ctx.moveTo(mx + mr * .47 + mr * .88, my - mr * .3);
-      ctx.arc(mx + mr * .47, my - mr * .3, mr * .88, 0, TAU);
-      ctx.fillStyle = '#fff4d6'; ctx.fill('evenodd');
-      ctx.restore();
+      // A crescent: the moon's disc with an offset disc rubbed out (drawn apart, so no seam shows).
+      const size = Math.ceil(mr * 2 + 4), off = document.createElement('canvas');
+      off.width = off.height = size * 3;
+      const o = off.getContext('2d');
+      o.scale(3, 3);
+      o.fillStyle = '#fff4d6'; o.beginPath(); o.arc(size / 2, size / 2, mr, 0, TAU); o.fill();
+      o.globalCompositeOperation = 'destination-out';
+      o.beginPath(); o.arc(size / 2 + mr * .47, size / 2 + mr * cut, mr * .88, 0, TAU); o.fill();
+      ctx.drawImage(off, mx - size / 2, my - size / 2, size, size);
       for (const [x, y, size, phase, speed, tint] of this.stars) {
         const tw = .5 + .5 * Math.sin(now * speed + phase);
         const px = x * W, py = y * H;
