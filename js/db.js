@@ -27,15 +27,27 @@ export function openDB() {
 function done(tx) {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = () => reject(tx.error || new Error('Storage error'));
     tx.onabort = () => reject(tx.error || new Error('Storage transaction aborted'));
   });
 }
 
+// Safari on iPhone can fail to store Blob/File objects ("Error preparing Blob/File data"),
+// so files are stored as plain bytes and turned back into Blobs when read.
+async function pack(value) {
+  if (value instanceof Blob) return { __bytes: await value.arrayBuffer(), type: value.type };
+  return value;
+}
+function unpack(value) {
+  if (value && value.__bytes instanceof ArrayBuffer) return new Blob([value.__bytes], { type: value.type || '' });
+  return value;
+}
+
 export async function put(store, key, value) {
+  const packed = await pack(value);   // read the bytes before the transaction opens
   const db = await openDB();
   const tx = db.transaction(store, 'readwrite');
-  tx.objectStore(store).put(value, key);
+  tx.objectStore(store).put(packed, key);
   return done(tx);
 }
 
@@ -43,7 +55,7 @@ export async function get(store, key) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const req = db.transaction(store).objectStore(store).get(key);
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => resolve(unpack(req.result));
     req.onerror = () => reject(req.error);
   });
 }

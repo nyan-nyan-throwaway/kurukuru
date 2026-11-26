@@ -22,6 +22,14 @@ const natural = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensiti
 export async function loadLibrary() {
   lib.tracks = new Map(await db.all('tracks'));
   lib.albums = new Map(await db.all('albums'));
+  // Tidy up songs left behind by an import that was interrupted.
+  const owned = new Set([...lib.albums.values()].flatMap(a => a.trackIds));
+  for (const id of [...lib.tracks.keys()]) {
+    if (!owned.has(id)) {
+      lib.tracks.delete(id);
+      try { await db.del('audio', id); await db.del('tracks', id); } catch (e) { /* try again next time */ }
+    }
+  }
 }
 
 export function albumTracks(album) {
@@ -94,10 +102,12 @@ export async function importFiles(files, progress = () => {}) {
 
   const touched = new Map();   // album key -> album (new or existing)
   const folderAlbums = new Map();
-  let n = 0;
+  let n = 0, added = 0;
+  const failures = [];
   for (const item of audio) {
     n++;
     progress({ stage: `Adding songs`, done: n - 1, total: audio.length, name: stem(item.path) });
+    try {
     const blob = await item.get();
     const tags = await readTags(blob);
     if (!tags.duration) tags.duration = await probeDuration(blob);
@@ -123,11 +133,19 @@ export async function importFiles(files, progress = () => {}) {
     const track = { id, albumKey: key, title, artist, album, track: tags.track || 0, disc: tags.disc || 0, year: tags.year || '',
                     duration: tags.duration || 0, lyrics: lyric || tags.lyrics || null, file: item.path.split('/').pop(),
                     type: blob.type || AUDIO[ext(item.path)], added: Date.now() };
-    await db.put('audio', id, blob.type ? blob : new Blob([blob], { type: AUDIO[ext(item.path)] }));
+    await db.put('audio', id, new Blob([await blob.arrayBuffer()], { type: blob.type || AUDIO[ext(item.path)] }));
     await db.put('tracks', id, track);
     lib.tracks.set(id, track);
     rec.trackIds.push(id);
+    await db.put('albums', rec.key, rec);   // saved song by song, so a later problem can't undo this one
+    lib.albums.set(rec.key, rec);
+    added++;
+    } catch (e) {
+      console.error('Import failed for', item.path, e);
+      failures.push(`${stem(item.path)}: ${(e && (e.name && e.name !== 'Error' ? e.name + ' – ' : '') + e.message) || e}`);
+    }
   }
+  if (!added && failures.length) throw new Error('Couldn’t add any songs. ' + failures[0]);
 
   // Pictures: front / back / disc / booklet pages, by name and folder.
   const single = touched.size === 1 ? [...touched.values()][0] : null;
@@ -147,7 +165,8 @@ export async function importFiles(files, progress = () => {}) {
     if (!kind) continue;
     if (kind === 'front' && rec.cover && !FRONT.test(name)) continue;
     if (kind === 'front' && rec.cover && FRONT.test(name)) continue;  // keep the embedded art, like the desktop app
-    const id = await storeImage(await item.get());
+    let id;
+    try { id = await storeImage(await item.get()); } catch (e) { console.error('Image failed', item.path, e); continue; }
     if (kind === 'booklet') rec.booklet.push(id);
     else if (kind === 'front') rec.cover = id;
     else if (kind === 'back') { if (!rec.back) rec.back = id; }
@@ -159,7 +178,7 @@ export async function importFiles(files, progress = () => {}) {
     lib.albums.set(rec.key, rec);
   }
   progress({ stage: 'Done', done: audio.length, total: audio.length });
-  return { albums: [...touched.values()].filter(a => a.trackIds.length), songs: audio.length };
+  return { albums: [...touched.values()].filter(a => a.trackIds.length), songs: added, failures };
 }
 
 function decodeText(bytes) {

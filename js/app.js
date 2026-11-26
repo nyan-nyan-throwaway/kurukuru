@@ -7,7 +7,7 @@ import { lib, loadLibrary, importFiles, albumTracks, sortedAlbums, imageFor, ima
 import { lyricsFor, unlockSounds, playSound, sounds, analyseLevels } from './audiofx.js';
 import { storageInfo, askPersist } from './db.js';
 
-const VERSION = '1.0';
+const VERSION = '1.0.2';
 const $ = id => document.getElementById(id);
 
 // ---------------------------------------------------------------- settings
@@ -490,14 +490,15 @@ picker.addEventListener('change', async () => {
     rebuildOrder();
     renderNow();
     if (!$('page-library').hidden) renderShelf();
-    toast(`Added ${result.songs} song${result.songs === 1 ? '' : 's'} in ${result.albums.length} album${result.albums.length === 1 ? '' : 's'}.`);
+    toast(`Added ${result.songs} song${result.songs === 1 ? '' : 's'} in ${result.albums.length} album${result.albums.length === 1 ? '' : 's'}.` +
+          (result.failures.length ? ` ${result.failures.length} couldn’t be added: ${result.failures[0]}` : ''), result.failures.length ? 10 : 3.5);
     if (!current && result.albums.length) {
       const first = albumTracks(result.albums[0])[0];
       if (first) playTrack(first.id, { autoplay: false });
     }
   } catch (e) {
     console.error(e);
-    toast(e.message || 'Couldn’t add those files.', 6);
+    toast((e && e.name && e.name !== 'Error' ? e.name + ': ' : '') + ((e && e.message) || 'Couldn’t add those files.'), 12);
   } finally {
     importing = false;
     $('importer').hidden = true;
