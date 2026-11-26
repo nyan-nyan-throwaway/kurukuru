@@ -19,7 +19,7 @@ const { plex } = plexApi;
 import { lyricsFor, unlockSounds, playSound, playSoundEvery, sounds, analyzeSpectrum } from './audiofx.js';
 import { storageInfo, askPersist } from './db.js';
 
-const VERSION = '1.9';
+const VERSION = '2.0';
 const $ = id => document.getElementById(id);
 
 // ---------------------------------------------------------------- settings
@@ -263,17 +263,26 @@ async function playTrack(id, { autoplay = true, animate = true, cdr = null, gapl
     state.levels = fresh ? cached.levels : cached;        // older cache: loudness only, until re-measured
     state.spectrum = fresh ? cached.spectrum : null;
   }
-  if (!fresh && settings.meter && (blob || (track.size && track.size < 60e6))) setTimeout(async () => {
+  // Measuring needs the whole song in memory, so: one at a time, only while the app is open,
+  // and not for very big files or long tracks (those get the simpler loudness meter).
+  const size = blob ? blob.size : track.size || 0, minutes = (track.duration || 0) / 60;
+  const fits = blob ? size < 45e6 : size && size < 30e6;
+  if (!fresh && settings.meter && fits && minutes < 12) setTimeout(async () => {
+    if (current !== track || measuring || document.hidden) return;
+    measuring = true;
     try {
-      if (current !== track) return;
-      const result = await analyzeSpectrum(blob || await plexApi.fetchSong(track));
+      const wanted = () => current === track && !document.hidden;
+      const source = blob || await plexApi.fetchSong(track);
+      const result = wanted() ? await analyzeSpectrum(source, wanted) : null;
       if (result) {
         await saveLevels(id, result);
         if (current === track) { state.levels = result.levels; state.spectrum = result.spectrum; }
       }
     } catch (e) { /* no visualizer for this one */ }
-  }, 1500);
+    finally { measuring = false; }
+  }, 2500);
 }
+let measuring = false;
 
 // Resume: where you were (song, CD-R, and the spot in the song), kept as you listen.
 function rememberSpot(t = audio.currentTime) {
@@ -1264,7 +1273,7 @@ function menu(title, items) {
   const close = () => { $('menu').hidden = true; };
   for (const it of items) {
     const b = document.createElement('button');
-    b.className = 'menu-item' + (it.danger ? ' danger' : '');
+    b.className = 'menu-item' + (it.danger ? ' danger' : '') + (it.cls ? ' ' + it.cls : '');
     b.innerHTML = esc(it.label) + (it.note ? `<small>${esc(it.note)}</small>` : '');
     b.onclick = () => { playSound('press'); close(); it.run(); };   // run() stays inside the tap (file pickers need that)
     box.appendChild(b);
@@ -1365,7 +1374,14 @@ function stopAndEject() {
 function chooseCdr(ids) {
   const what = ids.length === 1 ? `“${lib.tracks.get(ids[0]).title}”` : plural(ids.length, 'song');
   menu(`Burn ${what} to…`, [
-    ...lib.cdrs.map(c => ({ label: c.title, note: cdrMeta(c), run: () => burn(c, ids) })),
+    ...lib.cdrs.map(c => {
+      // ✓ when it's already on that CD-R (for an album: how many of its songs are)
+      const have = new Set(c.tracks), on = ids.filter(id => have.has(id)).length;
+      const all = on === ids.length;
+      const mark = all ? '✓ ' : '';
+      const already = all ? (ids.length === 1 ? 'already on it · ' : 'all already on it · ') : on ? `${on} of ${ids.length} already on it · ` : '';
+      return { label: mark + c.title, note: already + cdrMeta(c), run: () => burn(c, ids), cls: all ? 'has-it' : '' };
+    }),
     { label: '+ A new blank CD-R', run: () => openCdrEditor(null, ids) },
   ]);
 }

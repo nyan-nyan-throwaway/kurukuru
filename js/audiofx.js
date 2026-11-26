@@ -239,18 +239,23 @@ export function shapeSpectrum(db, frames) {
 }
 
 // { spectrum: Uint8Array(frames x 16) at 25 fps, levels: [...] at 12.5 fps for the glow }
-export async function analyzeSpectrum(blob) {
-  const data = await blob.arrayBuffer();
+// Decoding a whole song takes a lot of memory, and iPhone restarts web apps that use too
+// much, so this decodes one copy at low quality (it only needs to see the shape of the music)
+// and the caller runs one at a time. stillWanted() lets it stop early if you've moved on.
+export async function analyzeSpectrum(blob, stillWanted = () => true) {
   let buffer = null;
   for (const rate of [16000, 22050, 44100]) {
+    if (!stillWanted()) return null;
     try {
       const Offline = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-      buffer = await new Offline(1, rate, rate).decodeAudioData(data.slice(0));
+      // a fresh read each try: decoding uses the bytes up, and no second copy is kept around
+      buffer = await new Offline(1, rate, rate).decodeAudioData(await blob.arrayBuffer());
       break;
     } catch (e) { buffer = null; }
   }
   if (!buffer) return null;
   const rate = buffer.sampleRate, ch = buffer.getChannelData(0);
+  buffer = null;
   const N = rate > 30000 ? 2048 : rate > 18000 ? 1024 : 512;
   const hop = rate / SPECTRUM_FPS, frames = Math.max(1, Math.floor(ch.length / hop));
   const edges = [];
@@ -270,7 +275,10 @@ export async function analyzeSpectrum(blob) {
       db[f * BANDS + b] = 10 * Math.log10(sum / (hi - lo) + 1e-12);
     }
     if (f % 2 === 0) levels.push(Math.min(1, Math.max(.04, Math.sqrt(rms / N) ** .55 * 2.1)));
-    if (f % 400 === 399) await new Promise(r => setTimeout(r, 0));   // keep the app responsive
+    if (f % 400 === 399) {
+      await new Promise(r => setTimeout(r, 0));   // keep the app responsive
+      if (!stillWanted()) return null;
+    }
   }
   return { v: 2, spectrum: shapeSpectrum(db, frames), levels };
 }
