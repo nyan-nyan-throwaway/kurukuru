@@ -63,6 +63,7 @@
       <div class="shelf-tabs">
         <button id="shelfAlbums" class="hw-flat"><i class="lamp"></i>ALBUMS</button>
         <button id="shelfCdrs" class="hw-flat"><i class="lamp"></i>CD-Rs</button>
+        <button id="shelfStats" class="hw-flat"><i class="lamp"></i>STATS</button>
       </div>
       <div class="shelf-tools">
         <input id="search" type="search" placeholder="Search" autocomplete="off">
@@ -119,6 +120,7 @@
   <div class="overlay-head"><b>SETTINGS</b><button id="closeSettings" class="hw-flat">DONE</button></div>
   <div class="settings-body">
     <p class="silk">APPEARANCE</p>
+    <label>Player shell <select id="setShell"><option value="auto">Auto: album colors</option><option value="silver">Silver</option><option value="purple">Clear purple</option><option value="mint">Mint</option><option value="sakura">Sakura pink</option><option value="midnight">Midnight</option></select></label>
     <label>Theme <select id="setTheme"><option value="Auto">Auto: Day 7am, Night 7pm</option><option value="Day">Day</option><option value="Night">Night</option></select></label>
     <label>Disc print <select id="setDisc"><option value="design">Made from album colors</option><option value="art">Album art</option><option value="silver">Plain silver</option></select></label>
     <label class="check"><input type="checkbox" id="setObi"> Obi strips on jewel cases</label>
@@ -164,6 +166,18 @@
 
 <div id="toast" class="toast" hidden></div>
 <input id="filePicker" type="file" multiple hidden>
+<div id="karaoke" class="karaoke" hidden>
+  <div class="k-head"><div><b id="kTitle"></b><span id="kSub"></span></div><button id="kClose" class="hw-flat">CLOSE</button></div>
+  <div class="k-lines">
+    <p class="k-line k-prev" id="kPrev"></p>
+    <p class="k-line k-now" id="kNow"></p>
+    <p class="k-line k-next" id="kNext"></p>
+    <p class="k-line k-next2" id="kNext2"></p>
+  </div>
+  <div class="k-foot"><div class="k-bar"><i id="kBar"></i></div>
+    <button id="kPlay" class="hw-flat primary">PLAY / PAUSE</button></div>
+</div>
+
 <div id="menu" class="overlay menu-overlay" hidden>
   <div class="menu-box">
     <p id="menuTitle" class="menu-title"></p>
