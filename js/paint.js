@@ -692,12 +692,18 @@ export class Sky {
     else { g.addColorStop(0, col(mix('#b9defc', THEME.tint, .3))); g.addColorStop(1, col(mix('#fde6f2', THEME.tint2, .45))); }
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
     if (night) {
-      const mx = W * .78, my = 60;
-      const halo = ctx.createRadialGradient(mx, my, 0, mx, my, 70);
+      const { x: mx, y: my, r: mr } = this.moon || { x: W * .78, y: 60, r: 17 };
+      const halo = ctx.createRadialGradient(mx, my, 0, mx, my, mr * 4);
       halo.addColorStop(0, 'rgba(255,245,220,.27)'); halo.addColorStop(1, 'rgba(255,245,220,0)');
       ctx.fillStyle = halo; ctx.fillRect(0, 0, W, H);
-      ctx.save(); ctx.beginPath(); ctx.arc(mx, my, 17, 0, TAU); ctx.arc(mx + 8, my - 5, 15, 0, TAU, true);
-      ctx.fillStyle = '#fff4d6'; ctx.fill('evenodd'); ctx.restore();
+      // A crescent: the moon's disc with an offset disc taken away (clipped, so nothing outside the moon gets drawn).
+      ctx.save();
+      ctx.beginPath(); ctx.arc(mx, my, mr, 0, TAU); ctx.clip();
+      ctx.beginPath(); ctx.arc(mx, my, mr, 0, TAU);
+      ctx.moveTo(mx + mr * .47 + mr * .88, my - mr * .3);
+      ctx.arc(mx + mr * .47, my - mr * .3, mr * .88, 0, TAU);
+      ctx.fillStyle = '#fff4d6'; ctx.fill('evenodd');
+      ctx.restore();
       for (const [x, y, size, phase, speed, tint] of this.stars) {
         const tw = .5 + .5 * Math.sin(now * speed + phase);
         const px = x * W, py = y * H;

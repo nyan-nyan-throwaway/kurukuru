@@ -10,7 +10,7 @@ const { plex } = plexApi;
 import { lyricsFor, unlockSounds, playSound, sounds, analyseLevels } from './audiofx.js';
 import { storageInfo, askPersist } from './db.js';
 
-const VERSION = '1.1';
+const VERSION = '1.1.2';
 const $ = id => document.getElementById(id);
 
 // ---------------------------------------------------------------- settings
@@ -598,6 +598,8 @@ async function syncPlex(quiet) {
 
 $('plexConnect').onclick = async () => {
   playSound('press');
+  const btn = $('plexConnect');
+  btn.disabled = true; btn.textContent = 'CONNECTING…';
   try {
     linking = await plexApi.startLink();
     $('plexCode').textContent = linking.code;
@@ -606,7 +608,10 @@ $('plexConnect').onclick = async () => {
     linking = null;
     plexUi();
     if (ok) { toast(`Connected to ${plex.serverName}!`); await syncPlex(false); }
-  } catch (e) { linking = null; plexUi(); toast(e.message || 'Couldn’t reach Plex.', 8); }
+  } catch (e) {
+    linking = null; plexUi();
+    toast('Couldn’t reach plex.tv: ' + (e.name === 'AbortError' ? 'it took too long.' : e.message || e) + ' Check your internet connection and try again.', 10);
+  } finally { btn.disabled = false; btn.textContent = 'CONNECT TO PLEX'; }
 };
 $('plexSync').onclick = () => { playSound('press'); syncPlex(false); };
 $('plexDisconnect').onclick = async () => {
@@ -719,6 +724,9 @@ function drawSky(now) {
   sky.paint(g, skyCanvas.clientWidth, skyCanvas.clientHeight, night, t);
   // The visor shows the same sky, lined up with where it sits on screen.
   const r = visor.getBoundingClientRect();
+  // The moon sits in the visor's empty top-right corner, above the POWER label.
+  const moonR = Math.max(8, Math.min(13, r.height * .2));
+  sky.moon = { x: r.right - moonR - 16, y: r.top + moonR + 9, r: moonR };
   if (r.bottom > 0 && r.top < innerHeight) {
     dpr = sizeCanvas(visor);
     g = visor.getContext('2d');
