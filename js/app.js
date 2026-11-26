@@ -4,13 +4,13 @@ import { SHELLS, applyShell, shellPalette, shellTheme } from './shells.js';
 import { MIX_KINDS, MIX_LENGTHS, makeMix, mixLook } from './mixer.js';
 import { toHsv } from './theme.js';
 import { THEME, setTheme, albumScheme, autoThemeName, SCHEME_KEYS, albumPalette, mix, rgba, hex, parse, smooth, crc32, darker } from './theme.js';
-import { Sky, paintCaseFront, paintCaseBack, paintCaseBackImage, paintSpine, fmtTime, paintSlimCase, paintCdrBack, paintCdrSpine,
+import { Sky, paintCaseFront, paintCaseBack, paintCaseBackImage, paintSpine, fmtTime, paintSlimCase, paintCdrBack, paintHomePhoto, paintCdrSpine,
          renderDiscFace, CDR_DYES, MARKERS, OBI_DESIGNS, obiEffective, DOODLES, CASES, drawDoodle, doodlesOf, paintSleeve, paintBlankSleeve, RAINBOW, FUN_INKS, solidInk } from './paint.js';
 import { DiscView } from './disc.js';
 import { LcdView } from './lcd.js';
-import { lib, loadLibrary, importFiles, albumTracks, sortedAlbums, imageFor, imageBlob, audioBlob, deleteAlbum, cachedLevels, saveLevels,
+import { lib, loadLibrary, importFiles, albumTracks, sortedAlbums, natural, imageFor, imageBlob, audioBlob, deleteAlbum, cachedLevels, saveLevels,
          applyPlexLibrary, forgetPlex, keepAlbum, unkeepAlbum, saveTrack, art, bookletPages, setAlbumArt, resetAlbumArt, setObi,
-         setTrackLyrics, decodeText, countPlay, addListening, playsOf, lastPlayedOf, albumPlays, albumLastPlayed, saveStats, obiFor as albumObi, discOf, discCount, discArt, saveCdrs, saveTombstones, findCdr, cdrTracks, cdrMinutes, newCdr, updateCdr, burnTo, setStickers, deleteCdr, CDR_MINUTES } from './library.js';
+         setTrackLyrics, decodeText, countPlay, addListening, playsOf, lastPlayedOf, albumPlays, albumLastPlayed, saveStats, obiFor as albumObi, discOf, discCount, discArt, saveCdrs, saveTombstones, findCdr, cdrTracks, cdrMinutes, newCdr, updateCdr, burnTo, setStickers, setCdrPhoto, storeCdrPhoto, bytesHash, dropUnusedPhotos, deleteCdr, CDR_MINUTES } from './library.js';
 import { makeBackup, restoreBackup } from './backup.js';
 import { syncCdrs } from './cdrsync.js';
 import { syncArt } from './artsync.js';
@@ -19,7 +19,7 @@ const { plex } = plexApi;
 import { lyricsFor, unlockSounds, playSound, playSoundEvery, sounds, analyzeSpectrum } from './audiofx.js';
 import { storageInfo, askPersist } from './db.js';
 
-const VERSION = '2.0';
+const VERSION = '2.2';
 const $ = id => document.getElementById(id);
 
 // ---------------------------------------------------------------- settings
@@ -55,8 +55,13 @@ disc.setMode(settings.disc);
 disc.onLid = open => { state.lidOpen = open; playSound('lid'); };
 
 function flash(text, seconds = 3.5) { state.flash = [text, performance.now() + seconds * 1000]; }
-function toast(text, seconds = 3.5) {
+function toast(text, seconds = 3.5, action = null) {
   const t = $('toast'); t.textContent = text; t.hidden = false;
+  if (action) {
+    const b = document.createElement('button'); b.textContent = action.label;
+    b.onclick = e => { e.stopPropagation(); t.hidden = true; action.run(); };
+    t.appendChild(b);
+  }
   clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.hidden = true; }, seconds * 1000);
 }
 
@@ -468,7 +473,7 @@ const EQ = '<span class="eq"><i></i><i></i><i></i><i></i></span>';
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 // numbering: 'track' (the album's own numbers) or 'position' (a CD-R's running order).
-function trackRows(list, tracks, numbering = 'track') {
+function trackRows(list, tracks, numbering = 'track', editable = false) {
   const multi = numbering === 'track' && new Set(tracks.map(discOf)).size > 1;
   let lastDisc = null;
   list.innerHTML = tracks.map((t, i) => {
@@ -486,7 +491,7 @@ function trackRows(list, tracks, numbering = 'track') {
       <span class="n">${on ? EQ : String(num).padStart(2, '0')}</span>
       <span class="tt"><b>${esc(t.title)}</b><span>${esc(sub)}</span></span>
       <span class="d">${t.duration ? fmtTime(t.duration * 1000) : ''}</span>
-      <button class="more" aria-label="More for this song">•••</button>
+      ${editable ? '<button class="grip" aria-label="Drag to move">≡</button>' : ''}<button class="more" aria-label="More for this song">•••</button>
     </li>`;
   }).join('');
 }
@@ -547,6 +552,7 @@ for (const list of [$('nowList'), $('albumList')]) {
     const cdrId = list.dataset.cdr || null;
     unlockSounds(); playSound('press');
     if (e.target.closest('.more')) { trackMenu(li.dataset.id, cdrId); return; }
+    if (e.target.closest('.grip')) return;
     playTrack(li.dataset.id, { cdr: cdrId });
   });
 }
@@ -581,8 +587,14 @@ async function drawCase(canvas, album) {
   paintCaseFront(ctx, { album: album.album, artist: album.artist, year: album.year, obi, discs: discCount(album), stickers: stickersOf(album) }, img, palette, THEME.name === 'Night', settings.obi);
 }
 
-const cdrLook = cdr => ({ ...cdr, fraction: cdrMinutes(cdr) / CDR_MINUTES });
-function drawCdrCase(canvas, cdr) { paintSlimCase(sizeCase(canvas), cdrLook(cdr)); }
+const cdrLook = cdr => ({ ...cdr, fraction: cdrMinutes(cdr) / CDR_MINUTES, photoImg: cdr.photo ? photoCache.get(cdr.photo) || null : null });
+// CD-R photos, loaded once (painting is synchronous, so they're fetched first)
+const photoCache = new Map();
+async function loadPhoto(cdr) {
+  if (!cdr.photo || photoCache.has(cdr.photo)) return;
+  try { const img = await imageFor(cdr.photo); if (img) photoCache.set(cdr.photo, img); } catch { /* missing */ }
+}
+async function drawCdrCase(canvas, cdr) { await loadPhoto(cdr); paintSlimCase(sizeCase(canvas), cdrLook(cdr)); }
 
 async function drawSpine(canvas, album, playing) {
   const [{ palette }, obi] = await Promise.all([albumArt(album), obiOf(album)]);
@@ -607,6 +619,51 @@ const lazy = new IntersectionObserver(entries => {
   for (const e of entries) if (e.isIntersecting) { lazy.unobserve(e.target); e.target.redraw(); }
 }, { rootMargin: '300px' });
 
+// ---------------------------------------------------------------- sorting the shelf
+
+const ALBUM_SORTS = { title: 'Album title', artist: 'Artist', year: 'Year (newest first)', added: 'Recently added', played: 'Recently played', plays: 'Most played' };
+const CDR_SORTS = { newest: 'Newest first', oldest: 'Oldest first', title: 'Title', played: 'Recently played', plays: 'Most played', longest: 'Longest' };
+// When a CD-R was first burned (older ones from the desktop app have the time in their id).
+const cdrBorn = c => c.created || (/^[0-9a-f]{10,12}$/.test(c.id) ? parseInt(c.id, 16) : 0);
+const albumAdded = a => a.added || Math.max(0, ...albumTracks(a).map(t => t.added || 0));
+const yearOf = a => parseInt(String(a.year || '').slice(0, 4), 10) || 0;
+
+function sortAlbums(list, how) {
+  const byName = (a, b) => natural(a.album, b.album) || natural(a.artist, b.artist);
+  const by = {
+    title: byName,
+    artist: (a, b) => natural(a.artist, b.artist) || yearOf(a) - yearOf(b) || natural(a.album, b.album),
+    year: (a, b) => yearOf(b) - yearOf(a) || byName(a, b),
+    added: (a, b) => albumAdded(b) - albumAdded(a) || byName(a, b),
+    played: (a, b) => albumLastPlayed(b) - albumLastPlayed(a) || byName(a, b),
+    plays: (a, b) => albumPlays(b) - albumPlays(a) || byName(a, b),
+  }[how] || byName;
+  return [...list].sort(by);
+}
+function sortCdrs(list, how) {
+  const cs = c => (lib.stats.cdrs || {})[c.id] || {};
+  const byTitle = (a, b) => natural(a.title, b.title);
+  const by = {
+    newest: (a, b) => cdrBorn(b) - cdrBorn(a),
+    oldest: (a, b) => cdrBorn(a) - cdrBorn(b),
+    title: byTitle,
+    played: (a, b) => (cs(b).last || 0) - (cs(a).last || 0) || byTitle(a, b),
+    plays: (a, b) => (cs(b).plays || 0) - (cs(a).plays || 0) || byTitle(a, b),
+    longest: (a, b) => cdrMinutes(b) - cdrMinutes(a),
+  }[how] || ((a, b) => cdrBorn(b) - cdrBorn(a));
+  return [...list].sort(by);
+}
+$('sortButton').onclick = () => {
+  playSound('press');
+  const cdrs = settings.shelfTab === 'cdrs';
+  const sorts = cdrs ? CDR_SORTS : ALBUM_SORTS, key = cdrs ? 'cdrSort' : 'albumSort';
+  const now = settings[key] || (cdrs ? 'newest' : 'title');
+  menu(cdrs ? 'SORT CD-Rs' : 'SORT ALBUMS', Object.entries(sorts).map(([k, label]) => ({
+    label: (k === now ? '✓ ' : '') + label, cls: k === now ? 'has-it' : '',
+    run: () => { settings[key] = k; saveSettings(); renderShelf(); },
+  })));
+};
+
 function renderShelf() {
   const shelf = $('shelf');
   const q = $('search').value.trim().toLowerCase();
@@ -620,8 +677,12 @@ function renderShelf() {
   $('search').placeholder = tab === 'cdrs' ? 'Search CD-Rs' : 'Search albums';
   const items = tab === 'cdrs'
     ? lib.cdrs.filter(c => !q || `${c.title}\n${cdrTracks(c).map(t => t.title + ' ' + t.artist).join(' ')}`.toLowerCase().includes(q))
-        .sort((a, b) => (b.created || 0) - (a.created || 0)).map(c => ({ cdr: c, key: 'cdr:' + c.id }))
-    : sortedAlbums().filter(a => !q || `${a.album}\n${a.artist}`.toLowerCase().includes(q)).map(a => ({ album: a, key: a.key }));
+        .map(c => c)
+    : sortedAlbums().filter(a => !q || `${a.album}\n${a.artist}`.toLowerCase().includes(q));
+  const sortedItems = tab === 'cdrs' ? sortCdrs(items, settings.cdrSort || 'newest').map(c => ({ cdr: c, key: 'cdr:' + c.id }))
+                                     : sortAlbums(items, settings.albumSort || 'title').map(a => ({ album: a, key: a.key }));
+  const SHORT = { title: 'A–Z', artist: 'ARTIST', year: 'YEAR', added: 'NEW', played: 'RECENT', plays: 'TOP', newest: 'NEWEST', oldest: 'OLDEST', longest: 'LONGEST' };
+  $('sortButton').textContent = `${SHORT[tab === 'cdrs' ? settings.cdrSort || 'newest' : settings.albumSort || 'title']} ▾`;
   const spines = settings.shelf === 'spines';
   const wallet = tab === 'cdrs' && !spines;
   shelf.className = 'shelf' + (spines ? ' spines' : '') + (wallet ? ' wallet' : '');
@@ -660,7 +721,7 @@ function renderShelf() {
     shelf.appendChild(el); lazy.observe(el);
   }
   let row = null;
-  items.forEach(({ album, cdr, key: k }, i) => {
+  sortedItems.forEach(({ album, cdr, key: k }, i) => {
     const el = document.createElement('div');
     el.dataset.key = k;
     el.classList.toggle('playing', k === key);
@@ -678,7 +739,7 @@ function renderShelf() {
     } else if (cdr) {
       el.className += ' sleeve';
       el.innerHTML = `<canvas></canvas><b>${esc(title)}</b><span>${esc(sub)}</span>`;
-      el.redraw = () => paintSleeve(sizeSleeve(el.firstChild), 100, cdrLook(cdr), el.classList.contains('playing'));
+      el.redraw = async () => { await loadPhoto(cdr); paintSleeve(sizeSleeve(el.firstChild), 100, cdrLook(cdr), el.classList.contains('playing')); };
       shelf.appendChild(el);
     } else {
       el.className += ' card';
@@ -781,7 +842,7 @@ function openCdr(id, { keepFlip = false } = {}) {
   setPageButtons(true);
   if (!keepFlip) $('caseFlip').classList.remove('flipped');
   $('albumList').dataset.cdr = id;
-  trackRows($('albumList'), cdrTracks(cdr), 'position');
+  trackRows($('albumList'), cdrTracks(cdr), 'position', true);
   showPage('album');
   requestAnimationFrame(() => renderCdrCase(cdr));
 }
@@ -983,13 +1044,20 @@ async function runCdrSync() {
     return tracks;
   };
   try {
-    const out = await syncCdrs(JSON.parse(JSON.stringify(lib.cdrs)), tombstones, toKeys, fromKeys);
+    const photoHooks = {
+      blob: c => imageBlob(c.photo),
+      store: (c, blob, hash) => storeCdrPhoto(c, blob, hash),
+      drop: c => { delete c.photo; delete c.photoHash; },
+    };
+    const photosBefore = lib.cdrs.map(c => c.photo).filter(Boolean);
+    const out = await syncCdrs(JSON.parse(JSON.stringify(lib.cdrs)), tombstones, toKeys, fromKeys, Date.now(), photoHooks);
     const sent = new Set(tombstones.map(t => t.id));
     lib.tombstones = lib.tombstones.filter(t => !sent.has(t.id));
     await saveTombstones();
     if (rev !== lib.cdrRev) { cdrSyncBusy = false; scheduleCdrSync(500); return; }   // changed meanwhile: go round again
     const changed = JSON.stringify(out) !== JSON.stringify(lib.cdrs);
     lib.cdrs = out;
+    await dropUnusedPhotos(photosBefore);
     const t = new Date();
     const inPlex = out.filter(c => c.plexKey).length;
     cdrSyncNote = `CD-Rs synced ${t.getHours()}:${String(t.getMinutes()).padStart(2, '0')}: ${inPlex} in Plex` +
@@ -1319,11 +1387,17 @@ function stickerMenu(album) {
   ]);
 }
 
+// Pick a photo straight from the CD-R menu.
+let quickPhotoFor = null;
+function quickPhoto(cdr) { quickPhotoFor = cdr; $('cdrPhotoPicker').value = ''; $('cdrPhotoPicker').click(); }
+
 function cdrMenu(cdr) {
   if (!cdr) return;
   menu(cdr.title, [
-    { label: 'Add songs…', run: () => openSongPicker(cdr) },
-    { label: 'Edit the disc…', note: 'title, date, dye and marker color', run: () => openCdrEditor(cdr, null) },
+    { label: 'Add or take off songs…', run: () => openSongPicker(cdr) },
+    { label: 'Edit the disc…', note: 'title, date, colors, doodles, case and photo', run: () => openCdrEditor(cdr, null) },
+    { label: cdr.photo ? 'Change the photo…' : 'Add a photo…', note: 'printed at home and taped in the case', run: () => quickPhoto(cdr) },
+    ...(cdr.photo ? [{ label: 'Take the photo out', run: async () => { playSound('page'); await setCdrPhoto(cdr, null); cdrChanged(cdr); } }] : []),
     { label: 'Throw away this CD-R', danger: true, note: 'the songs stay in your library', run: () => throwAway(cdr) },
   ]);
 }
@@ -1337,8 +1411,14 @@ function trackMenu(id, cdrId) {
     const i = cdr.tracks.indexOf(id);
     if (i > 0) items.push({ label: 'Move up', run: () => moveInCdr(cdr, i, -1) });
     if (i < cdr.tracks.length - 1) items.push({ label: 'Move down', run: () => moveInCdr(cdr, i, 1) });
-    items.push({ label: 'Take off this CD-R', danger: true, run: async () => { await updateCdr(cdr, { tracks: cdr.tracks.filter(x => x !== id) }); cdrChanged(cdr); } });
+    items.push({ label: 'Take off this CD-R', danger: true, run: () => takeOff(cdr, id) });
   } else {
+    const last = settings.lastCdr && findCdr(settings.lastCdr);
+    if (last) {
+      const has = last.tracks.includes(id);
+      items.push(has ? { label: `✓ On “${last.title}”`, note: 'tap to take it off', cls: 'has-it', run: () => takeOff(last, id) }
+                     : { label: `+ Add to “${last.title}”`, note: 'the CD-R you burned to last', run: () => burn(last, [id]) });
+    }
     items.push({ label: 'Burn to a CD-R…', run: () => chooseCdr([id]) });
   }
   items.push({ label: t.lyrics ? 'Replace the lyrics…' : 'Add lyrics…', note: 'an .lrc (timed) or .txt file', run: () => pickLyrics(id) });
@@ -1379,14 +1459,17 @@ function chooseCdr(ids) {
       const have = new Set(c.tracks), on = ids.filter(id => have.has(id)).length;
       const all = on === ids.length;
       const mark = all ? '✓ ' : '';
-      const already = all ? (ids.length === 1 ? 'already on it · ' : 'all already on it · ') : on ? `${on} of ${ids.length} already on it · ` : '';
-      return { label: mark + c.title, note: already + cdrMeta(c), run: () => burn(c, ids), cls: all ? 'has-it' : '' };
+      // tapping a ✓ takes it off again; otherwise it burns (what isn't on it yet)
+      const already = all ? (ids.length === 1 ? 'on it · tap to take it off · ' : 'all on it · tap to take them off · ')
+                    : on ? `${on} of ${ids.length} on it · tap to add the rest · ` : '';
+      return { label: mark + c.title, note: already + cdrMeta(c), run: () => all ? takeOff(c, ids) : burn(c, ids), cls: all ? 'has-it' : '' };
     }),
     { label: '+ A new blank CD-R', run: () => openCdrEditor(null, ids) },
   ]);
 }
 
 async function burn(cdr, ids) {
+  settings.lastCdr = cdr.id; saveSettings();
   const n = await burnTo(cdr, ids);
   if (n) { playSound('burn'); setTimeout(() => playSound('burned'), 1050); } else playSound('press');
   const over = cdrMinutes(cdr) > CDR_MINUTES ? ' It’s now longer than a real 80-minute disc.' : '';
@@ -1394,6 +1477,54 @@ async function burn(cdr, ids) {
           : `${ids.length === 1 ? 'That song is' : 'Those songs are'} already on “${cdr.title}”.`, over ? 6 : 3.5);
   cdrChanged(cdr);
 }
+
+// ✕ on a CD-R page: off it goes, with a moment to change your mind.
+async function takeOff(cdr, ids) {
+  if (!cdr) return;
+  ids = [].concat(ids);
+  const gone = new Set(ids), before = [...cdr.tracks], t = lib.tracks.get(ids[0]);
+  playSound('marker');
+  await updateCdr(cdr, { tracks: cdr.tracks.filter(x => !gone.has(x)) });
+  cdrChanged(cdr);
+  toast(`Took ${ids.length === 1 ? `“${t ? t.title : 'it'}”` : plural(ids.length, 'song')} off “${cdr.title}”.`, 5, { label: 'UNDO', run: async () => { await updateCdr(cdr, { tracks: before }); playSound('press'); cdrChanged(cdr); } });
+}
+
+// ≡ on a CD-R page: drag a song up or down.
+let drag = null;
+$('albumList').addEventListener('pointerdown', e => {
+  const grip = e.target.closest('.grip');
+  if (!grip || !$('albumList').dataset.cdr) return;
+  e.preventDefault();
+  const li = grip.closest('li');
+  drag = { li, startY: e.clientY, id: e.pointerId, moved: false };
+  grip.setPointerCapture(e.pointerId);
+  li.classList.add('dragging');
+  playSound('press');
+});
+$('albumList').addEventListener('pointermove', e => {
+  if (!drag || e.pointerId !== drag.id) return;
+  const list = $('albumList'), li = drag.li;
+  const rows = [...list.children].filter(x => x !== li && x.dataset.id);
+  const before = rows.find(r => { const b = r.getBoundingClientRect(); return e.clientY < b.top + b.height / 2; });
+  const target = before || null;
+  if (target !== li.nextElementSibling && !(target === null && li === list.lastElementChild)) {
+    list.insertBefore(li, target); drag.moved = true; playSoundEvery('scrub', 120);
+  }
+});
+const endDrag = async e => {
+  if (!drag || e.pointerId !== drag.id) return;
+  const { li, moved } = drag; drag = null;
+  li.classList.remove('dragging');
+  const cdr = findCdr($('albumList').dataset.cdr);
+  if (!cdr || !moved) return;
+  const order = [...$('albumList').children].map(x => x.dataset.id).filter(Boolean);
+  const rest = cdr.tracks.filter(id => !order.includes(id));     // songs not shown here (missing) keep their place at the end
+  await updateCdr(cdr, { tracks: [...order, ...rest] });
+  playSound('case');
+  cdrChanged(cdr);
+};
+$('albumList').addEventListener('pointerup', endDrag);
+$('albumList').addEventListener('pointercancel', endDrag);
 
 async function moveInCdr(cdr, i, dir) {
   const tracks = [...cdr.tracks];
@@ -1418,9 +1549,10 @@ function openCdrEditor(cdr, ids) {
   cdrEditing = cdr; cdrBurnAfter = ids;
   const dyes = Object.keys(CDR_DYES);
   cdrDraft = cdr ? { id: cdr.id, title: cdr.title, date: cdr.date || '', dye: cdr.dye, marker: cdr.marker, tracks: cdr.tracks,
-                     doodles: doodlesOf(cdr), case: cdr.case || 'black' }
+                     doodles: doodlesOf(cdr), case: cdr.case || 'black', photo: cdr.photo || null, photoFile: null }
                  : { id: 'cdr-new-' + Date.now(), title: `Mix #${lib.cdrs.length + 1}`, date: todayStamp(),
-                     dye: 'blank', marker: FUN_INKS[Math.floor(Math.random() * FUN_INKS.length)], tracks: ids || [], case: 'black' };
+                     dye: 'blank', marker: FUN_INKS[Math.floor(Math.random() * FUN_INKS.length)], tracks: ids || [], case: 'black',
+                     photo: null, photoFile: null };
   if (!cdr) cdrDraft.doodles = doodlesOf(cdrDraft);
   $('cdrEditorTitle').textContent = cdr ? 'EDIT CD-R' : 'NEW CD-R';
   $('cdrTitle').value = cdrDraft.title; $('cdrDate').value = cdrDraft.date;
@@ -1429,8 +1561,40 @@ function openCdrEditor(cdr, ids) {
   $('cdrCases').innerHTML = Object.keys(CASES).map(k => `<span class="swatch-col"><button class="swatch case" data-case="${k}" style="background:${CASES[k][1]};opacity:${Math.max(.75, CASES[k][4])}" aria-label="${CASES[k][0]}"></button>${CASES[k][0]}</span>`).join('');
   $('cdrMarkers').innerHTML = Object.keys(MARKERS).map(k => `<span class="swatch-col"><button class="swatch" data-marker="${k}" style="background:${k === 'rainbow' ? `conic-gradient(${RAINBOW.join(',')},${RAINBOW[0]})` : MARKERS[k][1]}" aria-label="${MARKERS[k][0]}"></button>${MARKERS[k][0]}</span>`).join('');
   syncCdrEditor();
+  drawPhotoPreview();
   $('cdrEditor').hidden = false;
 }
+
+let draftPhotoImg = null;
+async function drawPhotoPreview() {
+  const c = $('cdrPhotoPreview'), d = cdrDraft;
+  draftPhotoImg = null;
+  if (d.photoFile) { try { draftPhotoImg = await createImageBitmap(d.photoFile); } catch { draftPhotoImg = null; } }
+  else if (d.photo) { await loadPhoto(d); draftPhotoImg = photoCache.get(d.photo) || null; }
+  c.hidden = !draftPhotoImg;
+  $('cdrPhotoRemove').hidden = !draftPhotoImg;
+  $('cdrPhotoAdd').textContent = draftPhotoImg ? 'CHANGE PHOTO' : 'ADD A PHOTO';
+  if (!draftPhotoImg) return;
+  const dpr = window.devicePixelRatio || 1;
+  c.width = c.height = Math.round(220 * dpr);
+  const g = c.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, 220, 220);
+  paintHomePhoto(g, draftPhotoImg, { ...d, title: d.title }, 110, 108, 176);
+}
+$('cdrPhotoAdd').onclick = () => { playSound('press'); quickPhotoFor = null; $('cdrPhotoPicker').value = ''; $('cdrPhotoPicker').click(); };
+$('cdrPhotoPicker').addEventListener('change', async () => {
+  const f = $('cdrPhotoPicker').files[0];
+  if (!f) return;
+  playSound('case');
+  if (quickPhotoFor) {
+    const cdr = quickPhotoFor; quickPhotoFor = null;
+    await setCdrPhoto(cdr, f); cdrChanged(cdr); toast(`Taped a photo into “${cdr.title}”.`);
+    return;
+  }
+  cdrDraft.photoFile = f; cdrDraft.photoRemoved = false;
+  drawPhotoPreview();
+});
+$('cdrPhotoRemove').onclick = () => { playSound('page'); cdrDraft.photoFile = null; cdrDraft.photo = null; cdrDraft.photoRemoved = true; drawPhotoPreview(); };
 
 function syncCdrEditor() {
   document.querySelectorAll('#cdrDyes .swatch').forEach(b => b.classList.toggle('on', b.dataset.dye === cdrDraft.dye));
@@ -1473,7 +1637,7 @@ $('doodleRandom').onclick = () => {
 };
 $('doodleNone').onclick = () => { playSound('press'); cdrDraft.doodles = []; syncCdrEditor(); };
 $('cdrMarkers').addEventListener('click', e => { const b = e.target.closest('[data-marker]'); if (b) { playSound('press'); cdrDraft.marker = b.dataset.marker; syncCdrEditor(); } });
-$('cdrTitle').addEventListener('input', () => { cdrDraft.title = $('cdrTitle').value; playSoundEvery('marker', 160); syncCdrEditor(); });
+$('cdrTitle').addEventListener('input', () => { cdrDraft.title = $('cdrTitle').value; playSoundEvery('marker', 160); syncCdrEditor(); if (draftPhotoImg) drawPhotoPreview(); });
 $('cdrDate').addEventListener('input', () => { cdrDraft.date = $('cdrDate').value; playSoundEvery('marker', 160); syncCdrEditor(); });
 $('cdrCancel').onclick = () => { $('cdrEditor').hidden = true; };
 $('cdrSave').onclick = async () => {
@@ -1481,8 +1645,15 @@ $('cdrSave').onclick = async () => {
   const fields = { title: cdrDraft.title.trim() || 'Mix', date: cdrDraft.date.trim(), dye: cdrDraft.dye, marker: cdrDraft.marker,
                    doodles: [...cdrDraft.doodles], case: cdrDraft.case };
   $('cdrEditor').hidden = true;
-  if (cdrEditing) { await updateCdr(cdrEditing, fields); cdrChanged(cdrEditing); return; }
+  const photoFile = cdrDraft.photoFile, photoRemoved = cdrDraft.photoRemoved;
+  if (cdrEditing) {
+    await updateCdr(cdrEditing, fields);
+    if (photoFile) await setCdrPhoto(cdrEditing, photoFile);
+    else if (photoRemoved && cdrEditing.photo) await setCdrPhoto(cdrEditing, null);
+    cdrChanged(cdrEditing); return;
+  }
   const cdr = await newCdr(fields);
+  if (photoFile) await setCdrPhoto(cdr, photoFile);
   scheduleCdrSync();
   renderNow();
   if (cdrBurnAfter && cdrBurnAfter.length) { await burn(cdr, cdrBurnAfter); return; }
@@ -1493,46 +1664,76 @@ $('cdrSave').onclick = async () => {
 // ---------------------------------------------------------------- picking songs for a CD-R
 
 let pickFor = null, picked = new Set();
+// Edit a CD-R's songs: everything on it starts ticked. Tick to add, untick to take off.
+let pickOnly = false, pickAdded = [];
 function openSongPicker(cdr) {
-  pickFor = cdr; picked = new Set();
+  pickFor = cdr; picked = new Set(cdr.tracks); pickAdded = []; pickOnly = false;
   $('pickSearch').value = '';
-  $('pickTitle').textContent = `ADD TO “${cdr.title.toUpperCase()}”`;
+  $('pickTitle').textContent = `“${cdr.title.toUpperCase()}”`;
   renderPicker();
   $('songPicker').hidden = false;
 }
 function renderPicker() {
   const q = $('pickSearch').value.trim().toLowerCase();
-  const all = order.map(id => lib.tracks.get(id)).filter(Boolean);
+  for (const [id, on] of [['pickAll', !pickOnly], ['pickOn', pickOnly]]) { $(id).classList.toggle('lit', on); $(id).querySelector('.lamp').classList.toggle('lit', on); }
+  const onDisc = new Set(pickFor.tracks);
+  const all = pickOnly ? [...pickFor.tracks, ...pickAdded].map(id => lib.tracks.get(id)).filter(Boolean)
+                       : order.map(id => lib.tracks.get(id)).filter(Boolean);
   const matches = q ? all.filter(t => `${t.title}\n${t.artist}\n${t.album}`.toLowerCase().includes(q)) : all;
   const shown = matches.slice(0, 300);
-  const onDisc = new Set(pickFor.tracks);
-  $('pickList').innerHTML = shown.map(t => `<li data-id="${t.id}" class="${picked.has(t.id) ? 'on' : ''} ${onDisc.has(t.id) ? 'burned' : ''}">
+  $('pickList').innerHTML = shown.map(t => {
+    const was = onDisc.has(t.id), on = picked.has(t.id);
+    const d = was ? (on ? 'on it' : 'coming off') : t.duration ? fmtTime(t.duration * 1000) : '';
+    return `<li data-id="${t.id}" class="${on ? 'on' : ''} ${was ? 'burned' : ''}">
       <span class="tick"></span><span class="tt"><b>${esc(t.title)}</b><span>${esc(t.artist)} · ${esc(t.album)}</span></span>
-      <span class="d">${onDisc.has(t.id) ? 'on it' : t.duration ? fmtTime(t.duration * 1000) : ''}</span></li>`).join('');
+      <span class="d">${d}</span></li>`;
+  }).join('') || `<p class="dim">${pickOnly ? 'Nothing on this CD-R yet: switch to ALL SONGS to pick some.' : 'Nothing matches.'}</p>`;
   pickInfo(matches.length > shown.length ? ` Showing ${shown.length} of ${matches.length}: search to narrow it down.` : '');
 }
+function pickChanges() {
+  const was = new Set(pickFor.tracks);
+  const adds = pickAdded.filter(id => picked.has(id) && !was.has(id));
+  const offs = pickFor.tracks.filter(id => lib.tracks.has(id) && !picked.has(id));
+  return { adds, offs };
+}
 function pickInfo(extra = '') {
-  const add = [...picked].map(id => lib.tracks.get(id));
-  const minutes = add.reduce((m, t) => m + (t.duration || 0), 0) / 60;
-  const total = Math.round(cdrMinutes(pickFor) + minutes);
-  $('pickInfo').textContent = (picked.size ? `${plural(picked.size, 'song')} picked · the disc would be ${total} of ${CDR_MINUTES} min${total > CDR_MINUTES ? ' (too long for a real CD-R!)' : ''}.`
-                                           : 'Tap songs to pick them.') + extra;
-  $('pickAdd').textContent = picked.size ? `ADD ${picked.size}` : 'ADD';
+  const { adds, offs } = pickChanges();
+  const total = Math.round([...picked].map(id => lib.tracks.get(id)).filter(Boolean).reduce((m, t) => m + (t.duration || 0), 0) / 60);
+  const bits = [];
+  if (adds.length) bits.push(`+${adds.length} to add`);
+  if (offs.length) bits.push(`−${offs.length} to take off`);
+  $('pickInfo').textContent = (bits.length ? bits.join(' · ') + ' · ' : 'Tick songs to add them, untick to take them off. ')
+    + `${total} of ${CDR_MINUTES} min${total > CDR_MINUTES ? ' (too long for a real CD-R!)' : ''}.` + extra;
+  $('pickAdd').textContent = adds.length || offs.length ? 'SAVE' : 'DONE';
 }
 $('pickSearch').addEventListener('input', renderPicker);
+$('pickAll').onclick = () => { playSound('press'); pickOnly = false; renderPicker(); };
+$('pickOn').onclick = () => { playSound('press'); pickOnly = true; renderPicker(); };
 $('pickList').addEventListener('click', e => {
   const li = e.target.closest('li');
-  if (!li || li.classList.contains('burned')) return;
-  playSound('press');
-  if (picked.has(li.dataset.id)) picked.delete(li.dataset.id); else picked.add(li.dataset.id);
-  li.classList.toggle('on', picked.has(li.dataset.id));
+  if (!li || !li.dataset.id) return;
+  const id = li.dataset.id;
+  if (picked.has(id)) { picked.delete(id); playSound('page'); }
+  else { picked.add(id); if (!pickFor.tracks.includes(id) && !pickAdded.includes(id)) pickAdded.push(id); playSound('marker'); }
+  const was = pickFor.tracks.includes(id);
+  li.classList.toggle('on', picked.has(id));
+  if (was) li.querySelector('.d').textContent = picked.has(id) ? 'on it' : 'coming off';
   pickInfo();
 });
 $('pickCancel').onclick = () => { $('songPicker').hidden = true; };
 $('pickAdd').onclick = async () => {
   $('songPicker').hidden = true;
-  if (!picked.size) return;
-  await burn(pickFor, order.filter(id => picked.has(id)));
+  const { adds, offs } = pickChanges();
+  if (!adds.length && !offs.length) return;
+  const cdr = pickFor, before = [...cdr.tracks];
+  const gone = new Set(offs);
+  await updateCdr(cdr, { tracks: [...cdr.tracks.filter(id => !gone.has(id)), ...adds] });
+  settings.lastCdr = cdr.id; saveSettings();
+  if (adds.length) { playSound('burn'); setTimeout(() => playSound('burned'), 1050); } else playSound('marker');
+  const over = cdrMinutes(cdr) > CDR_MINUTES ? ' It’s now longer than a real 80-minute disc.' : '';
+  const said = [adds.length ? `burned ${plural(adds.length, 'song')}` : '', offs.length ? `took ${plural(offs.length, 'song')} off` : ''].filter(Boolean).join(' and ');
+  toast(`“${cdr.title}”: ${said}.${over}`, 6, { label: 'UNDO', run: async () => { await updateCdr(cdr, { tracks: before }); playSound('press'); cdrChanged(cdr); } });
+  cdrChanged(cdr);
 };
 
 // ---------------------------------------------------------------- lyrics you add

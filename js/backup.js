@@ -15,6 +15,7 @@ export async function makeBackup({ songs = false } = {}, progress = () => {}) {
   let settings = {};
   try { settings = JSON.parse(localStorage.getItem('kurukuru-settings') || '{}'); } catch (e) { /* none */ }
   const images = new Set(Object.values(custom).flatMap(customImages));
+  for (const c of lib.cdrs) if (c.photo) images.add(c.photo);          // CD-R photos
   const files = [];
   let tracks = [], albums = [];
   if (songs) {

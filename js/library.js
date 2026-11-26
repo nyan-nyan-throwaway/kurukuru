@@ -428,11 +428,41 @@ export async function burnTo(cdr, ids) {
   return add.length;
 }
 
+// A CD-R's photo. photoHash tells the other app (through Plex) that the photo changed.
+export function bytesHash(buf) {
+  const b = new Uint8Array(buf);
+  let h = 2166136261;
+  const step = Math.max(1, Math.floor(b.length / 200000));     // big photos: sample evenly
+  for (let i = 0; i < b.length; i += step) { h ^= b[i]; h = Math.imul(h, 16777619) >>> 0; }
+  return (h >>> 0).toString(16) + '-' + b.length.toString(16);
+}
+export async function setCdrPhoto(cdr, file) {
+  const old = cdr.photo;
+  if (file) {
+    const id = await storePicture(file, 1400);
+    const blob = await imageBlob(id);
+    cdr.photo = id; cdr.photoHash = bytesHash(await blob.arrayBuffer());
+  } else { delete cdr.photo; delete cdr.photoHash; }
+  if (old && old !== cdr.photo) await dropImage(old);
+  touch(cdr);
+  await saveCdrs();
+}
+// From Plex: a photo the other app attached (bytes), with its hash.
+// (The old picture is cleaned up by dropUnusedPhotos once the synced list is kept.)
+export async function storeCdrPhoto(cdr, blob, hash) {
+  cdr.photo = await storeImage(blob); cdr.photoHash = hash;
+}
+export async function dropUnusedPhotos(before) {
+  const used = new Set(lib.cdrs.map(c => c.photo).filter(Boolean));
+  for (const id of before) if (!used.has(id)) await dropImage(id);
+}
+
 export async function deleteCdr(cdr) {
   lib.cdrs = lib.cdrs.filter(c => c !== cdr);
   lib.cdrRev++;
   if (cdr.plexKey) { lib.tombstones.push({ id: cdr.id, plexKey: cdr.plexKey }); await saveTombstones(); }
   await saveCdrs();
+  if (cdr.photo) await dropImage(cdr.photo);
 }
 
 // ---------------------------------------------------------------- backups restored before their albums exist

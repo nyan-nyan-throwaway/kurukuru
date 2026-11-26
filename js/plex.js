@@ -276,6 +276,22 @@ export const playlists = {
   },
   async setSummary(key, title, summary) { await call('PUT', `/playlists/${key}`, { title, summary }); },
   async remove(key) { await call('DELETE', `/playlists/${key}`); },
+  // A CD-R's photo is its playlist's poster (it shows in Plexamp too).
+  async setPoster(key, blob) {
+    const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), 60000);
+    try {
+      const res = await fetch(srv(`/library/metadata/${key}/posters`), { method: 'POST', body: blob, signal: ctrl.signal,
+        headers: { ...headers(cfg.server.token), 'Content-Type': blob.type || 'image/jpeg' } });
+      if (!res.ok) throw new Error(`Plex answered ${res.status}`);
+    } finally { clearTimeout(timer); }
+  },
+  async poster(key) {
+    const mc = (await call('GET', `/library/metadata/${key}`)).MediaContainer || {};
+    const thumb = ((mc.Metadata || [])[0] || {}).thumb;
+    if (!thumb) return null;
+    const res = await fetch(srv('/photo/:/transcode', { url: thumb, width: 1400, height: 1400, minSize: 1, upscale: 0 }), { headers: headers(cfg.server.token) });
+    return res.ok ? res.blob() : null;
+  },
 };
 
 // ---------------------------------------------------------------- photos (booklets, obi designs and pictures from the PC)

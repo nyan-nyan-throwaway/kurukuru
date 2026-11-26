@@ -486,6 +486,8 @@ export function paintSlimCase(ctx, cdr) {
   ctx.restore();
   ctx.strokeStyle = 'rgba(255,255,255,.47)'; ctx.lineWidth = 1; circle(ctx, 84.5, 85.5, R); ctx.stroke();
   ctx.fillStyle = hub; circle(ctx, 84.5, 85.5, R * .14); ctx.fill();
+  // a photo you printed and tucked in the front of the case
+  if (cdr.photoImg) { ctx.save(); roundRect(ctx, 6, 4, 157, 163, 5); ctx.clip(); paintHomePhoto(ctx, cdr.photoImg, cdr, 84.5, 84, 124); ctx.restore(); }
   ctx.save(); roundRect(ctx, 6, 4, 157, 163, 5); ctx.clip();
   const sheen = ctx.createLinearGradient(20, 8, 150, 160);
   sheen.addColorStop(0, 'rgba(255,255,255,.37)'); sheen.addColorStop(.3, 'rgba(255,255,255,.04)'); sheen.addColorStop(1, 'rgba(255,255,255,.18)');
@@ -1018,6 +1020,8 @@ export function paintSleeve(ctx, W, cdr, playing) {
   ctx.fillStyle = sheen; roundRect(ctx, 1, H * .1, W - 4, H * .9 - 4, W * .05); ctx.fill();
   ctx.strokeStyle = 'rgba(120,110,150,.35)'; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(W * .06, H * .1); ctx.lineTo(W * .94 - 3, H * .1); ctx.stroke();
+  // its photo, taped onto the outside of the sleeve
+  if (cdr.photoImg) paintHomePhoto(ctx, cdr.photoImg, cdr, W * .7, H * .3, W * .46, { caption: false, tapes: 1 });
   ctx.restore();
 }
 
@@ -1036,5 +1040,96 @@ export function paintBlankSleeve(ctx, W) {
   handwrite(ctx, '+ burn a', cx, cy - R * .5, R * 1.4, R * .22, THEME.accent, 3, -6);
   handwrite(ctx, 'new one!', cx, cy + R * .5, R * 1.4, R * .22, THEME.accent, 4, -4);
   drawDoodle(ctx, 'sparkle', cx + R * .72, cy - R * .78, R * .13, THEME.accent, 9);
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------- homemade photos on CD-Rs
+// A photo printed at home on an inkjet and cut out with scissors: a little faded and warm,
+// faint print banding, an uneven white border with the title written on it in marker, and
+// washi tape holding it down. The desktop app paints the same (main.py: paint_home_photo).
+
+const TAPES = [['#ffc2d6', '#ff9cbd'], ['#bfe7d6', '#8fd3b8'], ['#cfd8ff', '#a9b8ff'], ['#ffe7a3', '#ffd25e'], ['#e3cfff', '#c9a8ff']];
+const printed = new WeakMap();   // image → its "printed" look, made once per size
+
+function inkjetPrint(img, w, h, seed) {
+  const key = `${Math.round(w)}x${Math.round(h)}`;
+  let byImg = printed.get(img);
+  if (byImg && byImg[key]) return byImg[key];
+  const S = 3, c = document.createElement('canvas');
+  c.width = Math.round(w * S); c.height = Math.round(h * S);
+  const g = c.getContext('2d');
+  // crop to fill, like trimming a print
+  const iw = img.width, ih = img.height, scale = Math.max(c.width / iw, c.height / ih);
+  g.drawImage(img, (c.width - iw * scale) / 2, (c.height - ih * scale) / 2, iw * scale, ih * scale);
+  g.globalCompositeOperation = 'saturation'; g.fillStyle = 'rgba(128,128,128,.22)'; g.fillRect(0, 0, c.width, c.height);
+  g.globalCompositeOperation = 'multiply'; g.fillStyle = 'rgba(255,236,214,.55)'; g.fillRect(0, 0, c.width, c.height);
+  g.globalCompositeOperation = 'screen'; g.fillStyle = 'rgba(46,30,60,.16)'; g.fillRect(0, 0, c.width, c.height);   // lifted, faded blacks
+  g.globalCompositeOperation = 'source-over';
+  const r = rng(seed + 404);
+  for (let y = 0; y < c.height; y += 2.2 * S) {        // print-head banding
+    g.fillStyle = `rgba(255,255,255,${r.uniform(.02, .07)})`; g.fillRect(0, y, c.width, S * .7);
+  }
+  for (let k = 0; k < 2; k++) {                          // a stronger band or two where the ink ran low
+    g.fillStyle = 'rgba(255,250,240,.12)'; g.fillRect(0, r.uniform(0, c.height), c.width, S * r.uniform(1.2, 2.6));
+  }
+  const grain = g.getImageData(0, 0, c.width, c.height), d = grain.data;
+  for (let i = 0; i < d.length; i += 4) { const n = (r.random() - .5) * 18; d[i] += n; d[i + 1] += n; d[i + 2] += n; }
+  g.putImageData(grain, 0, 0);
+  const vig = g.createRadialGradient(c.width / 2, c.height / 2, Math.min(c.width, c.height) * .35, c.width / 2, c.height / 2, Math.max(c.width, c.height) * .75);
+  vig.addColorStop(0, 'rgba(0,0,0,0)'); vig.addColorStop(1, 'rgba(60,30,20,.16)');
+  g.fillStyle = vig; g.fillRect(0, 0, c.width, c.height);
+  byImg = byImg || {}; byImg[key] = c; printed.set(img, byImg);
+  return c;
+}
+
+function cutEdge(ctx, w, h, r) {      // a rectangle cut by hand: no edge quite straight
+  const j = () => r.uniform(-.9, .9);
+  ctx.beginPath();
+  ctx.moveTo(-w / 2 + j(), -h / 2 + j());
+  ctx.lineTo(j(), -h / 2 + j() * .6);
+  ctx.lineTo(w / 2 + j(), -h / 2 + j());
+  ctx.lineTo(w / 2 + j() * .6, j());
+  ctx.lineTo(w / 2 + j(), h / 2 + j());
+  ctx.lineTo(j(), h / 2 + j() * .6);
+  ctx.lineTo(-w / 2 + j(), h / 2 + j());
+  ctx.lineTo(-w / 2 + j() * .6, j());
+  ctx.closePath();
+}
+
+function washiTape(ctx, x, y, len, wid, angle, colors, r) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(angle);
+  ctx.beginPath();
+  const teeth = 5, step = wid / teeth;
+  ctx.moveTo(-len / 2, -wid / 2);
+  ctx.lineTo(len / 2, -wid / 2);
+  for (let k = 1; k <= teeth; k++) ctx.lineTo(len / 2 + (k % 2 ? 1.1 : -.4) + r.uniform(-.3, .3), -wid / 2 + k * step);
+  ctx.lineTo(-len / 2, wid / 2);
+  for (let k = teeth - 1; k >= 0; k--) ctx.lineTo(-len / 2 + (k % 2 ? -1.1 : .4) + r.uniform(-.3, .3), -wid / 2 + k * step);
+  ctx.closePath();
+  ctx.fillStyle = rgba(colors[0], .72); ctx.fill();
+  ctx.save(); ctx.clip();
+  ctx.strokeStyle = rgba(colors[1], .65); ctx.lineWidth = wid * .14;     // stripes
+  for (let sx = -len / 2 - wid; sx < len / 2 + wid; sx += wid * .5) { ctx.beginPath(); ctx.moveTo(sx, -wid / 2); ctx.lineTo(sx + wid * .6, wid / 2); ctx.stroke(); }
+  ctx.fillStyle = 'rgba(255,255,255,.18)'; ctx.fillRect(-len / 2, -wid / 2, len, wid * .3);
+  ctx.restore();
+  ctx.restore();
+}
+
+// Paints the taped photo centered at (cx, cy), w wide. Returns nothing; img may be an ImageBitmap or canvas.
+export function paintHomePhoto(ctx, img, cdr, cx, cy, w, { caption = true, tapes = 2 } = {}) {
+  const seed = crc32(String(cdr.id || cdr.title || '')) + 17, r = rng(seed);
+  const side = w * .045, bottom = caption ? w * .2 : w * .06;
+  const pw = w - side * 2, ph = pw * .86, h = ph + side + bottom;
+  ctx.save();
+  ctx.translate(cx, cy); ctx.rotate(r.uniform(-.07, .07));
+  ctx.shadowColor = 'rgba(30,20,50,.32)'; ctx.shadowBlur = w * .05; ctx.shadowOffsetY = w * .02;
+  cutEdge(ctx, w, h, r); ctx.fillStyle = '#fbf8f0'; ctx.fill();
+  ctx.shadowColor = 'transparent';
+  ctx.drawImage(inkjetPrint(img, pw, ph, seed), -w / 2 + side + r.uniform(-.5, .5), -h / 2 + side, pw, ph);
+  ctx.strokeStyle = 'rgba(120,100,90,.18)'; ctx.lineWidth = .5; cutEdge(ctx, w, h, rng(seed)); ctx.stroke();
+  if (caption && cdr.title) handwrite(ctx, cdr.title, 0, h / 2 - bottom / 2 + 1, w - side * 4, Math.min(bottom * .62, w * .11), markerInk(cdr), seed, r.uniform(-2, 2));
+  const tape = TAPES[seed % TAPES.length];
+  if (tapes > 0) washiTape(ctx, -w / 2 + w * .08, -h / 2 + w * .04, w * .36, w * .1, -.72 + r.uniform(-.12, .12), tape, r);
+  if (tapes > 1) washiTape(ctx, w / 2 - w * .08, -h / 2 + w * .04, w * .36, w * .1, .72 + r.uniform(-.12, .12), TAPES[(seed + 2) % TAPES.length], r);
   ctx.restore();
 }
