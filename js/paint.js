@@ -1,3 +1,4 @@
+import { DOODLES, CASES } from './doodles.js';
 // Drawing: disc prints, obi, jewel cases, spines, case backs, the sky, LCD digits and icons.
 // A port of the desktop app's QPainter code to canvas 2D.
 import { THEME, parse, hex, rgba, mix, toHsv, fromHsv, soften, readableOn, darker, lighter, albumPalette,
@@ -342,15 +343,77 @@ export function renderDiscFace(R, dpr, image, mode, album, artist, night, cacheK
 
 // ---------------------------------------------------------------- CD-R (used later for playlists)
 
-export const CDR_DYES = { gold: ['Gold', '#f7e7a8', '#dcb85c', '#a8802c'], blue: ['Azo blue', '#a8d8ff', '#3f74d6', '#1f3a8f'],
+export const CDR_DYES = { blank: ['Blank', '#fdfdfe', '#eceef3', '#a9adbd'], gold: ['Gold', '#f7e7a8', '#dcb85c', '#a8802c'], blue: ['Azo blue', '#a8d8ff', '#3f74d6', '#1f3a8f'],
   green: ['Green', '#cff2dc', '#4fae84', '#246b4f'], silver: ['Silver', '#f6f7fb', '#c9ccd6', '#8f95a5'],
   pink: ['Pink', '#ffd9ea', '#ef8fbb', '#b54d80'], black: ['Black', '#5f5d6c', '#2b2a34', '#121117'] };
 
 export const MARKERS = { black: ['Black', '#1d1b22'], blue: ['Blue', '#2347b5'], red: ['Red', '#c8283c'],
-  purple: ['Purple', '#6a2fb5'], green: ['Green', '#1f7a4a'], silver: ['Silver', '#ecebf3'] };
+  purple: ['Purple', '#6a2fb5'], green: ['Green', '#1f7a4a'], silver: ['Silver', '#ecebf3'],
+  pink: ['Pink', '#e8458f'], orange: ['Orange', '#f07d1a'], teal: ['Teal', '#109e9a'], sky: ['Sky blue', '#3b97e6'],
+  lime: ['Lime', '#5fb52a'], rainbow: ['Rainbow', 'rainbow'] };
+// Rainbow gel pen: each letter (and each doodle) a different colour.
+export const RAINBOW = ['#e8458f', '#f07d1a', '#e0a800', '#4cb944', '#3b97e6', '#8a5cf0'];
+export const FUN_INKS = ['pink', 'orange', 'teal', 'sky', 'lime', 'purple', 'rainbow'];
+const inkAt = (color, i) => (color === 'rainbow' ? RAINBOW[((i % RAINBOW.length) + RAINBOW.length) % RAINBOW.length] : color);
+// A plain colour to stand for an ink (rainbow → its first colour).
+export const solidInk = color => (color === 'rainbow' ? RAINBOW[0] : color);
 const MARKER_FONT = '"Marker Felt","Chalkboard SE","Comic Neue","Comic Sans MS","Patrick Hand","Hiragino Maru Gothic ProN",cursive';
 const markerFont = px => `bold ${Math.max(4, px).toFixed(1)}px ${MARKER_FONT}`;
 const markerInk = cdr => (MARKERS[cdr.marker] || MARKERS.black)[1];
+export { DOODLES, CASES };
+
+// ---------------------------------------------------------------- doodles
+
+// Follows one doodle's outline (see doodles.js) on ctx; returns the solid dots (eyes and such) to fill.
+function traceDoodle(ctx, spec) {
+  const t = spec.trim().split(/\s+/);
+  const dots = [];
+  ctx.beginPath();
+  for (let i = 0; i < t.length;) {
+    const c = t[i++], n = k => t.slice(i, i += k).map(Number);
+    if (c === 'M') ctx.moveTo(...n(2));
+    else if (c === 'L') ctx.lineTo(...n(2));
+    else if (c === 'Q') ctx.quadraticCurveTo(...n(4));
+    else if (c === 'C') ctx.bezierCurveTo(...n(6));
+    else if (c === 'Z') ctx.closePath();
+    else if (c === 'O') { const [x, y, r] = n(3); if (r <= .1) dots.push([x, y, r]); else { ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, TAU); } }
+    else if (c === 'E') { const [x, y, rx, ry] = n(4); ctx.moveTo(x + rx, y); ctx.ellipse(x, y, rx, ry, 0, 0, TAU); }
+  }
+  return dots;
+}
+
+// A felt-tip doodle, `s` = half its size, a little tilted.
+export function drawDoodle(ctx, name, cx, cy, s, color, seed = 1) {
+  const d = DOODLES[name];
+  if (!d) return;
+  color = inkAt(color, seed);
+  const r = rng(seed);
+  ctx.save();
+  ctx.translate(cx, cy); ctx.rotate(rad(r.uniform(-16, 16))); ctx.scale(s, s);
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  const width = Math.min(.2, 1.6 / s + .07);
+  for (const [dx, dy, col, w] of [[.05, .04, rgba(color, .43), width], [0, 0, color, width]]) {
+    ctx.save(); ctx.translate(dx, dy);
+    const dots = traceDoodle(ctx, d[2]);
+    if (d[1] && col === color) { ctx.fillStyle = rgba(color, .22); ctx.fill(); }
+    ctx.strokeStyle = col; ctx.lineWidth = w; ctx.stroke();
+    ctx.fillStyle = col;
+    for (const [x, y, rr] of dots) { ctx.beginPath(); ctx.arc(x, y, rr + width * .3, 0, TAU); ctx.fill(); }
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+// The doodles on a CD-R: the ones you picked, or (until you pick) a couple chosen by its id.
+export function doodlesOf(cdr) {
+  if (Array.isArray(cdr.doodles)) return cdr.doodles.filter(n => DOODLES[n]).slice(0, 4);
+  const names = Object.keys(DOODLES), r = rng(crc32(String(cdr.id || cdr.title || '')) + 7);
+  const out = [];
+  while (out.length < 2 + (r.int(0, 1))) { const n = r.choice(names); if (!out.includes(n)) out.push(n); }
+  return out;
+}
+const caseOf = cdr => CASES[cdr.case] || CASES.black;
+const DOODLE_SPOTS = [[-.64, .08], [.64, .02], [-.4, .62], [.05, .82], [.66, -.32], [-.64, -.34]];
 const cdrSeed = cdr => crc32(String(cdr.id || cdr.title || ''));
 
 // Felt-tip lettering: chunky, slightly wobbly letters on a tilted line.
@@ -363,15 +426,15 @@ export function handwrite(ctx, text, cx, cy, maxW, size, color, seed, angle = 0,
   const total = ctx.measureText(text).width;
   ctx.translate(cx, cy); ctx.rotate(rad(angle));
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  const faint = rgba(color, .43);
-  let x = align === 'center' ? -total / 2 : 0;
+  let x = align === 'center' ? -total / 2 : 0, k = seed % RAINBOW.length;
   for (const ch of [...text]) {
+    const ink = inkAt(color, k++), faint = rgba(ink, .43);
     const w = ctx.measureText(ch).width;
     ctx.save();
     ctx.translate(x + w / 2, r.uniform(-size * .06, size * .06));
     ctx.rotate(rad(r.uniform(-5, 5)));
     ctx.fillStyle = faint; ctx.fillText(ch, .35, .25);
-    ctx.fillStyle = color; ctx.fillText(ch, 0, 0);
+    ctx.fillStyle = ink; ctx.fillText(ch, 0, 0);
     ctx.restore();
     x += w * r.uniform(.97, 1.04);
   }
@@ -383,10 +446,15 @@ export function paintCdrFace(ctx, R, cdr) {
   const base = ctx.createRadialGradient(0, 0, 0, 0, 0, R);
   base.addColorStop(0, light); base.addColorStop(.7, mid); base.addColorStop(1, light);
   ctx.fillStyle = base; circle(ctx, 0, 0, R); ctx.fill();
-  const outer = R * (.37 + .6 * Math.max(.05, Math.min(1, cdr.fraction || .5)));
-  ctx.beginPath(); ctx.arc(0, 0, outer, 0, TAU); ctx.arc(0, 0, R * .35, 0, TAU, true);
-  ctx.fillStyle = rgba(dark, .27); ctx.fill('evenodd');
-  ctx.strokeStyle = rgba(dark, .43); ctx.lineWidth = .8; circle(ctx, 0, 0, outer); ctx.stroke();
+  if (cdr.dye === 'blank') {   // a plain printable top: just the faint stacking ring
+    ctx.strokeStyle = rgba(dark, .35); ctx.lineWidth = .8; circle(ctx, 0, 0, R * .37); ctx.stroke();
+    ctx.strokeStyle = rgba(dark, .18); circle(ctx, 0, 0, R * .97); ctx.stroke();
+  } else {
+    const outer = R * (.37 + .6 * Math.max(.05, Math.min(1, cdr.fraction || .5)));
+    ctx.beginPath(); ctx.arc(0, 0, outer, 0, TAU); ctx.arc(0, 0, R * .35, 0, TAU, true);
+    ctx.fillStyle = rgba(dark, .27); ctx.fill('evenodd');
+    ctx.strokeStyle = rgba(dark, .43); ctx.lineWidth = .8; circle(ctx, 0, 0, outer); ctx.stroke();
+  }
   const sheen = ctx.createConicGradient(rad(-30), 0, 0);
   ['#ff9ad5', '#9ad7ff', '#fff59a', '#a6ffcf', '#ff9ad5'].forEach((c, i) => sheen.addColorStop(i / 4, rgba(c, .16)));
   ctx.fillStyle = sheen; circle(ctx, 0, 0, R); ctx.fill();
@@ -394,13 +462,19 @@ export function paintCdrFace(ctx, R, cdr) {
   const ink = markerInk(cdr), seed = cdrSeed(cdr);
   handwrite(ctx, cdr.title || 'Mix', 0, -R * .56, R * 1.25, R * .19, ink, seed, -7);
   if (cdr.date) handwrite(ctx, cdr.date, R * .36, R * .6, R * .6, R * .1, ink, seed + 1, -4);
+  const r = rng(seed + 3), spots = DOODLE_SPOTS.slice();
+  doodlesOf(cdr).forEach((name, i) => {
+    const [x, y] = spots.splice(r.int(0, Math.min(spots.length - 1, 3 - Math.min(i, 2) + 1)), 1)[0];
+    drawDoodle(ctx, name, x * R, y * R, R * .12, ink, seed + 11 + i);
+  });
 }
 
 // A slim CD-R case (172 x 178 card space): black tray with the disc showing through clear plastic.
 export function paintSlimCase(ctx, cdr) {
   ctx.save();
   ctx.fillStyle = 'rgba(14,10,29,.12)'; roundRect(ctx, 9, 9, 161, 169, 8); ctx.fill();
-  ctx.fillStyle = '#1e1c24'; ctx.strokeStyle = '#58546a'; ctx.lineWidth = 1.4;
+  const [, tray, edge, hub, alpha] = caseOf(cdr);
+  ctx.fillStyle = rgba(tray, alpha); ctx.strokeStyle = edge; ctx.lineWidth = 1.4;
   roundRect(ctx, 5, 3, 159, 165, 6); ctx.fill(); ctx.stroke();
   const R = 72;
   ctx.save();
@@ -410,7 +484,7 @@ export function paintSlimCase(ctx, cdr) {
   ctx.fillStyle = 'rgba(236,236,248,.78)'; circle(ctx, 0, 0, R * .3); ctx.fill();
   ctx.restore();
   ctx.strokeStyle = 'rgba(255,255,255,.47)'; ctx.lineWidth = 1; circle(ctx, 84.5, 85.5, R); ctx.stroke();
-  ctx.fillStyle = '#3a3746'; circle(ctx, 84.5, 85.5, R * .14); ctx.fill();
+  ctx.fillStyle = hub; circle(ctx, 84.5, 85.5, R * .14); ctx.fill();
   ctx.save(); roundRect(ctx, 6, 4, 157, 163, 5); ctx.clip();
   const sheen = ctx.createLinearGradient(20, 8, 150, 160);
   sheen.addColorStop(0, 'rgba(255,255,255,.37)'); sheen.addColorStop(.3, 'rgba(255,255,255,.04)'); sheen.addColorStop(1, 'rgba(255,255,255,.18)');
@@ -428,7 +502,8 @@ export function paintCdrBack(ctx, cdr, titles) {
   const seed = cdrSeed(cdr);
   ctx.save();
   ctx.fillStyle = 'rgba(14,10,29,.12)'; roundRect(ctx, 9, 9, 161, 169, 8); ctx.fill();
-  ctx.fillStyle = '#e8e6ef'; ctx.strokeStyle = '#9a95ab'; ctx.lineWidth = 1.4;
+  const [, tray, edge, , alpha] = caseOf(cdr);
+  ctx.fillStyle = cdr.case && cdr.case !== 'black' ? rgba(tray, alpha) : '#e8e6ef'; ctx.strokeStyle = cdr.case && cdr.case !== 'black' ? edge : '#9a95ab'; ctx.lineWidth = 1.4;
   roundRect(ctx, 5, 3, 159, 165, 6); ctx.fill(); ctx.stroke();
   const px = 10, py = 8, pw = 149, ph = 155;
   ctx.fillStyle = '#fdfbf4'; ctx.fillRect(px, py, pw, ph);
@@ -446,8 +521,11 @@ export function paintCdrBack(ctx, cdr, titles) {
     y += 9;
   });
   if (shown.length < titles.length) handwrite(ctx, `+ ${titles.length - shown.length} more…`, px + 19, y + 4.5, 80, 6.5, ink, seed + 99, 0, 'left');
-  if (!titles.length) handwrite(ctx, '(nothing burned yet)', px + 19, y + 4.5, 110, 6.5, rgba(ink, .5), seed + 5, 0, 'left');
+  if (!titles.length) handwrite(ctx, '(nothing burned yet)', px + 19, y + 4.5, 110, 6.5, rgba(solidInk(ink), .5), seed + 5, 0, 'left');
   if (cdr.date) handwrite(ctx, cdr.date, px + pw - 22, py + ph - 7, 40, 7, ink, seed + 7, -6);
+  const doodles = doodlesOf(cdr);
+  if (doodles[0]) drawDoodle(ctx, doodles[0], px + pw - 11, py + 12, 6.5, ink, seed + 21);
+  if (doodles[1]) drawDoodle(ctx, doodles[1], px + pw - 14, py + ph - 24, 7.5, ink, seed + 22);
   ctx.save(); roundRect(ctx, 6, 4, 157, 163, 5); ctx.clip();
   const sheen = ctx.createLinearGradient(20, 8, 150, 160);
   sheen.addColorStop(0, 'rgba(255,255,255,.31)'); sheen.addColorStop(.3, 'rgba(255,255,255,.02)'); sheen.addColorStop(1, 'rgba(255,255,255,.16)');
@@ -462,15 +540,21 @@ export function paintCdrSpine(ctx, x, y, w, h, cdr, playing) {
   const sx = x + w * .2, sw = w * .6;
   ctx.save();
   ctx.fillStyle = 'rgba(20,10,40,.16)'; roundRect(ctx, sx + 1.5, y + 1.5, sw, h, 2); ctx.fill();
+  const [, tray, edge, hub, alpha] = caseOf(cdr);
+  const dark = !cdr.case || cdr.case === 'black';
   const g = ctx.createLinearGradient(sx, 0, sx + sw, 0);
-  g.addColorStop(0, '#3a3746'); g.addColorStop(.5, '#1e1c24'); g.addColorStop(1, '#2c2a35');
+  if (dark) { g.addColorStop(0, '#3a3746'); g.addColorStop(.5, '#1e1c24'); g.addColorStop(1, '#2c2a35'); }
+  else { g.addColorStop(0, rgba(hub, Math.max(alpha, .9))); g.addColorStop(.5, rgba(tray, Math.max(alpha, .9))); g.addColorStop(1, rgba(edge, .9)); }
   ctx.fillStyle = g; roundRect(ctx, sx, y, sw, h, 2); ctx.fill();
   ctx.strokeStyle = playing ? THEME.accent : 'rgba(0,0,0,.31)'; ctx.lineWidth = playing ? 1.6 : 1; ctx.stroke();
   ctx.fillStyle = mid; circle(ctx, sx + sw / 2, y + 9, 4); ctx.fill();
   ctx.save();
   ctx.translate(sx + sw / 2, y + h - 8); ctx.rotate(-Math.PI / 2);
-  handwrite(ctx, cdr.title || 'Mix', 0, 0, h - 26, sw * .8, '#ecebf3', cdrSeed(cdr), 0, 'left');
+  const pen = dark ? '#ecebf3' : (cdr.marker === 'silver' ? MARKERS.black[1] : markerInk(cdr));
+  handwrite(ctx, cdr.title || 'Mix', 0, 0, h - 38, sw * .8, pen, cdrSeed(cdr), 0, 'left');
   ctx.restore();
+  const first = doodlesOf(cdr)[0];
+  if (first) drawDoodle(ctx, first, sx + sw / 2, y + 22, sw * .32, pen, cdrSeed(cdr) + 5);
   ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.fillRect(sx + 1, y + 2, .8, h - 4);
   ctx.restore();
 }
@@ -900,4 +984,51 @@ export class Sky {
 export function fmtTime(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}
+
+// ---------------------------------------------------------------- the CD-R wallet
+
+// One page pocket of a CD wallet (W x W*1.06): clear plastic sleeve with the bare disc inside.
+export function paintSleeve(ctx, W, cdr, playing) {
+  const H = W * 1.06, R = W * .43, cx = W / 2, cy = H * .54;
+  ctx.save();
+  ctx.fillStyle = 'rgba(20,10,40,.10)'; roundRect(ctx, 3, 4, W - 3, H - 3, W * .05); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.38)'; ctx.strokeStyle = playing ? THEME.accent : 'rgba(120,110,150,.45)'; ctx.lineWidth = playing ? 2.2 : 1;
+  roundRect(ctx, 1, 1, W - 4, H - 4, W * .05); ctx.fill(); ctx.stroke();
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.shadowColor = 'rgba(30,20,60,.25)'; ctx.shadowBlur = W * .04; ctx.shadowOffsetY = W * .015;
+  ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.fillStyle = '#ddd'; ctx.fill();
+  ctx.shadowColor = 'transparent';
+  ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.arc(0, 0, R * .155, 0, TAU, true); ctx.save(); ctx.clip('evenodd');
+  paintCdrFace(ctx, R, cdr);
+  ctx.fillStyle = 'rgba(236,236,248,.75)'; circle(ctx, 0, 0, R * .3); ctx.fill();
+  ctx.restore();
+  ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 1; circle(ctx, 0, 0, R); ctx.stroke();
+  ctx.restore();
+  // the sleeve's window and its open top edge
+  const sheen = ctx.createLinearGradient(0, 0, W, H);
+  sheen.addColorStop(0, 'rgba(255,255,255,.42)'); sheen.addColorStop(.35, 'rgba(255,255,255,.05)'); sheen.addColorStop(1, 'rgba(255,255,255,.2)');
+  ctx.fillStyle = sheen; roundRect(ctx, 1, H * .1, W - 4, H * .9 - 4, W * .05); ctx.fill();
+  ctx.strokeStyle = 'rgba(120,110,150,.35)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(W * .06, H * .1); ctx.lineTo(W * .94 - 3, H * .1); ctx.stroke();
+  ctx.restore();
+}
+
+// The first pocket: a blank disc waiting to be burned.
+export function paintBlankSleeve(ctx, W) {
+  const H = W * 1.06, R = W * .43, cx = W / 2, cy = H * .54;
+  ctx.save();
+  ctx.setLineDash([5, 4]); ctx.strokeStyle = rgba(THEME.ink_soft, .7); ctx.lineWidth = 1.4;
+  roundRect(ctx, 1.5, 1.5, W - 5, H - 5, W * .05); ctx.stroke();
+  ctx.setLineDash([]);
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+  g.addColorStop(0, 'rgba(255,255,255,.65)'); g.addColorStop(.7, 'rgba(225,230,245,.55)'); g.addColorStop(1, 'rgba(255,255,255,.7)');
+  ctx.fillStyle = g; circle(ctx, cx, cy, R); ctx.fill();
+  ctx.strokeStyle = rgba(THEME.ink_soft, .45); ctx.lineWidth = 1; circle(ctx, cx, cy, R); ctx.stroke();
+  ctx.fillStyle = rgba(THEME.ink_soft, .25); circle(ctx, cx, cy, R * .15); ctx.fill();
+  handwrite(ctx, '+ burn a', cx, cy - R * .5, R * 1.4, R * .22, THEME.accent, 3, -6);
+  handwrite(ctx, 'new one!', cx, cy + R * .5, R * 1.4, R * .22, THEME.accent, 4, -4);
+  drawDoodle(ctx, 'sparkle', cx + R * .72, cy - R * .78, R * .13, THEME.accent, 9);
+  ctx.restore();
 }

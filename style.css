@@ -270,3 +270,19 @@ input.swatch[type=color]::-webkit-color-swatch { border: 0; border-radius: 50%; 
 .tracks li.disc-head:first-child { border-top: 0; padding-top: 6px; }
 .tracks li.disc-head b { font-size: 11px; letter-spacing: .18em; color: var(--accent); }
 .tracks li.disc-head span { font-size: 11px; color: var(--ink-soft); }
+
+/* ---------------------------------------------------------------- CD-R wallet and doodles */
+.shelf-tabs { display: flex; gap: 8px; margin-bottom: 8px; }
+.shelf-tabs .hw-flat { flex: 1; }
+.shelf.wallet { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 14px 12px; padding: 4px 2px 8px; }
+.shelf.wallet .sleeve { display: flex; flex-direction: column; align-items: center; text-align: center; cursor: pointer; min-width: 0; }
+.shelf.wallet .sleeve canvas { width: 100%; aspect-ratio: 1 / 1.06; display: block; }
+.shelf.wallet .sleeve b { font-size: 13px; margin-top: 4px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: "Marker Felt", "Chalkboard SE", "Comic Sans MS", cursive; }
+.shelf.wallet .sleeve span { font-size: 11px; color: var(--ink-soft); }
+.shelf.wallet .sleeve.playing b { color: var(--accent); }
+.doodles { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin: 4px 0 8px; }
+.doodles button { aspect-ratio: 1; border-radius: 12px; border: 2px solid var(--btn-edge); background: var(--btn-top); padding: 4px; }
+.doodles button canvas { width: 100%; height: 100%; display: block; }
+.doodles button.on { border-color: var(--accent); background: var(--list-sel); }
+.swatch.case { border-radius: 9px; }

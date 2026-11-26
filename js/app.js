@@ -1,7 +1,7 @@
 // Kurukuru CD for iPhone: the app.
 import { THEME, setTheme, albumScheme, autoThemeName, SCHEME_KEYS, albumPalette, mix, rgba, hex, parse, smooth, crc32, darker } from './theme.js';
 import { Sky, paintCaseFront, paintCaseBack, paintCaseBackImage, paintSpine, fmtTime, paintSlimCase, paintCdrBack, paintCdrSpine,
-         renderDiscFace, CDR_DYES, MARKERS, OBI_DESIGNS, obiEffective } from './paint.js';
+         renderDiscFace, CDR_DYES, MARKERS, OBI_DESIGNS, obiEffective, DOODLES, CASES, drawDoodle, doodlesOf, paintSleeve, paintBlankSleeve, RAINBOW, FUN_INKS, solidInk } from './paint.js';
 import { DiscView } from './disc.js';
 import { LcdView } from './lcd.js';
 import { lib, loadLibrary, importFiles, albumTracks, sortedAlbums, imageFor, imageBlob, audioBlob, deleteAlbum, cachedLevels, saveLevels,
@@ -15,12 +15,12 @@ const { plex } = plexApi;
 import { lyricsFor, unlockSounds, playSound, sounds, analyseLevels } from './audiofx.js';
 import { storageInfo, askPersist } from './db.js';
 
-const VERSION = '1.5';
+const VERSION = '1.6';
 const $ = id => document.getElementById(id);
 
 // ---------------------------------------------------------------- settings
 
-const DEFAULTS = { theme: 'Auto', disc: 'design', obi: true, sky: true, meter: true, lyrics: true, sounds: true, fx: 70, shelf: 'cases', volume: 1 };
+const DEFAULTS = { theme: 'Auto', disc: 'design', obi: true, sky: true, meter: true, lyrics: true, sounds: true, fx: 70, shelf: 'cases', shelfTab: 'albums', volume: 1 };
 const settings = { ...DEFAULTS };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('kurukuru-settings') || '{}')); } catch (e) { /* private mode */ }
 const saveSettings = () => { try { localStorage.setItem('kurukuru-settings', JSON.stringify(settings)); } catch (e) { /* ignore */ } };
@@ -93,7 +93,10 @@ async function schemeFor(track, cdr) {
   let palette = [], seed = null;
   if (cdr) {
     const [, light, mid, dark] = CDR_DYES[cdr.dye] || CDR_DYES.gold;
-    palette = [parse(mid), parse(dark), parse(light)];
+    const ink = (MARKERS[cdr.marker] || MARKERS.black)[1];
+    palette = cdr.dye === 'blank'
+      ? (ink === 'rainbow' ? [parse(RAINBOW[0]), parse(RAINBOW[4]), parse(RAINBOW[2])] : [parse(ink), parse(mid), parse(light)])
+      : [parse(mid), parse(dark), parse(light)];
     seed = crc32(cdr.id);
   } else if (track) {
     const album = lib.albums.get(track.albumKey);
@@ -410,7 +413,7 @@ function markPlaying() {
     }
   }
   const key = playingKey();
-  document.querySelectorAll('.card, .spine').forEach(el => {
+  document.querySelectorAll('.card, .spine, .sleeve[data-key]').forEach(el => {
     const on = el.dataset.key === key;
     if (el.classList.contains('playing') !== on) { el.classList.toggle('playing', on); if (el.redraw) el.redraw(); }
   });
@@ -486,25 +489,42 @@ const lazy = new IntersectionObserver(entries => {
 function renderShelf() {
   const shelf = $('shelf');
   const q = $('search').value.trim().toLowerCase();
-  const items = [
-    ...lib.cdrs.filter(c => !q || `${c.title}\ncd-r`.toLowerCase().includes(q)).map(c => ({ cdr: c, key: 'cdr:' + c.id })),
-    ...sortedAlbums().filter(a => !q || `${a.album}\n${a.artist}`.toLowerCase().includes(q)).map(a => ({ album: a, key: a.key })),
-  ];
+  const tab = settings.shelfTab === 'cdrs' ? 'cdrs' : 'albums';
+  for (const [id, on] of [['shelfAlbums', tab === 'albums'], ['shelfCdrs', tab === 'cdrs']]) {
+    $(id).classList.toggle('lit', on); $(id).querySelector('.lamp').classList.toggle('lit', on);
+  }
+  $('newCdr').hidden = tab !== 'cdrs';
+  $('search').placeholder = tab === 'cdrs' ? 'Search CD-Rs' : 'Search albums';
+  const items = tab === 'cdrs'
+    ? lib.cdrs.filter(c => !q || `${c.title}\n${cdrTracks(c).map(t => t.title + ' ' + t.artist).join(' ')}`.toLowerCase().includes(q))
+        .sort((a, b) => (b.created || 0) - (a.created || 0)).map(c => ({ cdr: c, key: 'cdr:' + c.id }))
+    : sortedAlbums().filter(a => !q || `${a.album}\n${a.artist}`.toLowerCase().includes(q)).map(a => ({ album: a, key: a.key }));
   const spines = settings.shelf === 'spines';
-  shelf.className = 'shelf' + (spines ? ' spines' : '');
+  const wallet = tab === 'cdrs' && !spines;
+  shelf.className = 'shelf' + (spines ? ' spines' : '') + (wallet ? ' wallet' : '');
   $('viewToggle').classList.toggle('lit', spines);
   shelf.innerHTML = '';
-  if (!items.length) {
-    shelf.innerHTML = `<p class="dim">${lib.albums.size || lib.cdrs.length ? 'Nothing matches.' : 'Your shelf is empty. Tap ⏏ to add music, or connect Plex in Settings.'}</p>`;
+  if (!items.length && !(wallet && !q)) {
+    shelf.innerHTML = `<p class="dim">${q ? 'Nothing matches.' : tab === 'cdrs' ? 'No CD-Rs yet. Tap + CD-R to burn your first mix.'
+      : lib.albums.size ? '' : 'Your shelf is empty. Tap ⏏ to add music, or connect Plex in Settings.'}</p>`;
     return;
   }
   const key = playingKey();
+  if (wallet && !q) {   // the first pocket: a blank disc
+    const el = document.createElement('div');
+    el.className = 'sleeve blank';
+    el.innerHTML = '<canvas></canvas><b>&nbsp;</b><span>&nbsp;</span>';
+    el.redraw = () => { const c = el.firstChild; const ctx = sizeSleeve(c); paintBlankSleeve(ctx, 100); };
+    el.addEventListener('click', () => { playSound('press'); openCdrEditor(null, null); });
+    shelf.appendChild(el); lazy.observe(el);
+  }
   let row = null;
   items.forEach(({ album, cdr, key: k }, i) => {
     const el = document.createElement('div');
     el.dataset.key = k;
     el.classList.toggle('playing', k === key);
-    const title = cdr ? cdr.title : album.album, sub = cdr ? `CD-R · ${plural(cdr.tracks.length, 'song')}` : album.artist;
+    const title = cdr ? cdr.title : album.album;
+    const sub = cdr ? `${plural(cdrTracks(cdr).length, 'song')} · ${Math.round(cdrMinutes(cdr))} min` : album.artist;
     if (spines) {
       el.className += ' spine';
       el.innerHTML = '<canvas></canvas>';
@@ -514,10 +534,15 @@ function renderShelf() {
       const perRow = Math.max(1, Math.floor((shelf.clientWidth || 320) / 31));
       if (i % perRow === 0) { row = document.createElement('div'); row.className = 'rack-row'; shelf.appendChild(row); }
       row.appendChild(el);
+    } else if (cdr) {
+      el.className += ' sleeve';
+      el.innerHTML = `<canvas></canvas><b>${esc(title)}</b><span>${esc(sub)}</span>`;
+      el.redraw = () => paintSleeve(sizeSleeve(el.firstChild), 100, cdrLook(cdr), el.classList.contains('playing'));
+      shelf.appendChild(el);
     } else {
       el.className += ' card';
       el.innerHTML = `<canvas></canvas><b>${esc(title)}</b><span>${esc(sub)}</span>`;
-      el.redraw = cdr ? () => drawCdrCase(el.firstChild, cdr) : () => drawCase(el.firstChild, album);
+      el.redraw = () => drawCase(el.firstChild, album);
       shelf.appendChild(el);
     }
     el.addEventListener('click', () => { playSound('press'); if (cdr) openCdr(cdr.id); else openAlbum(album.key); });
@@ -525,8 +550,21 @@ function renderShelf() {
   });
 }
 
+// A wallet pocket's canvas, drawn in a 100 x 106 space.
+function sizeSleeve(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth || 132;
+  canvas.width = Math.round(w * dpr); canvas.height = Math.round(w * 1.06 * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(canvas.width / 100, 0, 0, canvas.width / 100, 0, 0);
+  ctx.clearRect(0, 0, 100, 106);
+  return ctx;
+}
+
+function setShelfTab(tab) { settings.shelfTab = tab; saveSettings(); $('search').value = ''; renderShelf(); }
+
 function repaintCases() {
-  document.querySelectorAll('.card, .spine').forEach(el => el.redraw && el.redraw());
+  document.querySelectorAll('.card, .spine, .sleeve').forEach(el => el.redraw && el.redraw());
   if (shownAlbum) renderAlbumCase(lib.albums.get(shownAlbum));
   if (shownCdr && findCdr(shownCdr)) renderCdrCase(findCdr(shownCdr));
   const nowCanvas = document.querySelector('#nowHeader canvas');
@@ -577,6 +615,7 @@ function openAlbum(key) {
   const album = lib.albums.get(key);
   if (!album) return;
   shownAlbum = key; shownCdr = null;
+  if (settings.shelfTab !== 'albums') { settings.shelfTab = 'albums'; saveSettings(); }
   const tracks = albumTracks(album);
   $('albumTitle').textContent = album.album;
   const minutes = Math.round(tracks.reduce((s, t) => s + (t.duration || 0), 0) / 60);
@@ -595,6 +634,7 @@ function openCdr(id, { keepFlip = false } = {}) {
   const cdr = findCdr(id);
   if (!cdr) { showPage('library'); return; }
   shownCdr = id; shownAlbum = null;
+  if (settings.shelfTab !== 'cdrs') { settings.shelfTab = 'cdrs'; saveSettings(); }
   $('albumTitle').textContent = cdr.title;
   $('albumMeta').textContent = cdrMeta(cdr) + (cdr.tracks.length ? '' : ' · nothing burned yet: tap + ADD SONGS, or use ••• next to any song');
   setPageButtons(true);
@@ -923,6 +963,8 @@ $('playAlbum').onclick = () => {
 $('openBooklet').onclick = openBooklet;
 $('cdrAdd').onclick = () => { playSound('press'); const c = findCdr(shownCdr); if (c) openSongPicker(c); };
 $('newCdr').onclick = () => { playSound('press'); openCdrEditor(null, null); };
+$('shelfAlbums').onclick = () => { playSound('press'); setShelfTab('albums'); };
+$('shelfCdrs').onclick = () => { playSound('press'); setShelfTab('cdrs'); };
 $('albumMore').onclick = () => { playSound('press'); if (shownCdr) cdrMenu(findCdr(shownCdr)); else if (shownAlbum) albumMenu(lib.albums.get(shownAlbum)); };
 
 // ---------------------------------------------------------------- menus
@@ -1053,13 +1095,17 @@ function todayStamp() { const d = new Date(); return `${d.getMonth() + 1}/${d.ge
 function openCdrEditor(cdr, ids) {
   cdrEditing = cdr; cdrBurnAfter = ids;
   const dyes = Object.keys(CDR_DYES);
-  cdrDraft = cdr ? { id: cdr.id, title: cdr.title, date: cdr.date || '', dye: cdr.dye, marker: cdr.marker, tracks: cdr.tracks }
+  cdrDraft = cdr ? { id: cdr.id, title: cdr.title, date: cdr.date || '', dye: cdr.dye, marker: cdr.marker, tracks: cdr.tracks,
+                     doodles: doodlesOf(cdr), case: cdr.case || 'black' }
                  : { id: 'cdr-new-' + Date.now(), title: `Mix #${lib.cdrs.length + 1}`, date: todayStamp(),
-                     dye: dyes[lib.cdrs.length % dyes.length], marker: 'black', tracks: ids || [] };
+                     dye: 'blank', marker: FUN_INKS[Math.floor(Math.random() * FUN_INKS.length)], tracks: ids || [], case: 'black' };
+  if (!cdr) cdrDraft.doodles = doodlesOf(cdrDraft);
   $('cdrEditorTitle').textContent = cdr ? 'EDIT CD-R' : 'NEW CD-R';
   $('cdrTitle').value = cdrDraft.title; $('cdrDate').value = cdrDraft.date;
   $('cdrDyes').innerHTML = dyes.map(k => `<span class="swatch-col"><button class="swatch" data-dye="${k}" style="background:radial-gradient(${CDR_DYES[k][1]},${CDR_DYES[k][2]})" aria-label="${CDR_DYES[k][0]}"></button>${CDR_DYES[k][0]}</span>`).join('');
-  $('cdrMarkers').innerHTML = Object.keys(MARKERS).map(k => `<span class="swatch-col"><button class="swatch" data-marker="${k}" style="background:${MARKERS[k][1]}" aria-label="${MARKERS[k][0]}"></button>${MARKERS[k][0]}</span>`).join('');
+  $('cdrDoodles').innerHTML = Object.keys(DOODLES).map(k => `<button data-doodle="${k}" aria-label="${DOODLES[k][0]}"><canvas width="88" height="88"></canvas></button>`).join('');
+  $('cdrCases').innerHTML = Object.keys(CASES).map(k => `<span class="swatch-col"><button class="swatch case" data-case="${k}" style="background:${CASES[k][1]};opacity:${Math.max(.75, CASES[k][4])}" aria-label="${CASES[k][0]}"></button>${CASES[k][0]}</span>`).join('');
+  $('cdrMarkers').innerHTML = Object.keys(MARKERS).map(k => `<span class="swatch-col"><button class="swatch" data-marker="${k}" style="background:${k === 'rainbow' ? `conic-gradient(${RAINBOW.join(',')},${RAINBOW[0]})` : MARKERS[k][1]}" aria-label="${MARKERS[k][0]}"></button>${MARKERS[k][0]}</span>`).join('');
   syncCdrEditor();
   $('cdrEditor').hidden = false;
 }
@@ -1067,6 +1113,14 @@ function openCdrEditor(cdr, ids) {
 function syncCdrEditor() {
   document.querySelectorAll('#cdrDyes .swatch').forEach(b => b.classList.toggle('on', b.dataset.dye === cdrDraft.dye));
   document.querySelectorAll('#cdrMarkers .swatch').forEach(b => b.classList.toggle('on', b.dataset.marker === cdrDraft.marker));
+  document.querySelectorAll('#cdrCases .swatch').forEach(b => b.classList.toggle('on', b.dataset.case === cdrDraft.case));
+  const ink = (MARKERS[cdrDraft.marker === 'silver' ? 'black' : cdrDraft.marker] || MARKERS.black)[1];
+  document.querySelectorAll('#cdrDoodles button').forEach((b, i) => {
+    b.classList.toggle('on', cdrDraft.doodles.includes(b.dataset.doodle));
+    const g = b.firstChild.getContext('2d');
+    g.clearRect(0, 0, 88, 88);
+    drawDoodle(g, b.dataset.doodle, 44, 44, 30, ink, i + 1);
+  });
   const c = $('cdrPreview');
   const dpr = window.devicePixelRatio || 1, R = 112;
   c.width = c.height = Math.round(230 * dpr);
@@ -1079,13 +1133,31 @@ function syncCdrEditor() {
 }
 
 $('cdrDyes').addEventListener('click', e => { const b = e.target.closest('[data-dye]'); if (b) { playSound('press'); cdrDraft.dye = b.dataset.dye; syncCdrEditor(); } });
+$('cdrDoodles').addEventListener('click', e => {
+  const b = e.target.closest('[data-doodle]');
+  if (!b) return;
+  playSound('press');
+  const n = b.dataset.doodle, list = cdrDraft.doodles.filter(x => x !== n);
+  if (list.length === cdrDraft.doodles.length) { list.push(n); if (list.length > 4) list.shift(); }
+  cdrDraft.doodles = list;
+  syncCdrEditor();
+});
+$('cdrCases').addEventListener('click', e => { const b = e.target.closest('[data-case]'); if (b) { playSound('press'); cdrDraft.case = b.dataset.case; syncCdrEditor(); } });
+$('doodleRandom').onclick = () => {
+  playSound('press');
+  const names = Object.keys(DOODLES).sort(() => Math.random() - .5);
+  cdrDraft.doodles = names.slice(0, 2 + Math.floor(Math.random() * 2));
+  syncCdrEditor();
+};
+$('doodleNone').onclick = () => { playSound('press'); cdrDraft.doodles = []; syncCdrEditor(); };
 $('cdrMarkers').addEventListener('click', e => { const b = e.target.closest('[data-marker]'); if (b) { playSound('press'); cdrDraft.marker = b.dataset.marker; syncCdrEditor(); } });
 $('cdrTitle').addEventListener('input', () => { cdrDraft.title = $('cdrTitle').value; syncCdrEditor(); });
 $('cdrDate').addEventListener('input', () => { cdrDraft.date = $('cdrDate').value; syncCdrEditor(); });
 $('cdrCancel').onclick = () => { $('cdrEditor').hidden = true; };
 $('cdrSave').onclick = async () => {
   playSound('press');
-  const fields = { title: cdrDraft.title.trim() || 'Mix', date: cdrDraft.date.trim(), dye: cdrDraft.dye, marker: cdrDraft.marker };
+  const fields = { title: cdrDraft.title.trim() || 'Mix', date: cdrDraft.date.trim(), dye: cdrDraft.dye, marker: cdrDraft.marker,
+                   doodles: [...cdrDraft.doodles], case: cdrDraft.case };
   $('cdrEditor').hidden = true;
   if (cdrEditing) { await updateCdr(cdrEditing, fields); cdrChanged(cdrEditing); return; }
   const cdr = await newCdr(fields);

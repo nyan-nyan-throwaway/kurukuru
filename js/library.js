@@ -3,6 +3,7 @@ import * as db from './db.js';
 import { readTags, probeDuration } from './tags.js';
 import { listZip, extract } from './zip.js';
 import * as plex from './plex.js';
+import { doodlesOf } from './paint.js';
 
 export const AUDIO = { mp3: 'audio/mpeg', m4a: 'audio/mp4', mp4: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac',
                        ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg', wav: 'audio/wav', aif: 'audio/aiff', aiff: 'audio/aiff' };
@@ -26,6 +27,7 @@ export async function loadLibrary() {
   lib.tracks = new Map(await db.all('tracks'));
   lib.albums = new Map(await db.all('albums'));
   lib.cdrs = (await db.get('extras', 'cdrs')) || [];
+  for (const c of lib.cdrs) if (!Array.isArray(c.doodles)) c.doodles = doodlesOf(c);   // fix each disc's doodles, so syncing keeps them
   lib.pending = (await db.get('extras', 'pending')) || {};
   lib.tombstones = (await db.get('extras', 'cdrTombstones')) || [];
   // Tidy up songs left behind by an import that was interrupted.
@@ -394,9 +396,10 @@ export const cdrMinutes = cdr => cdrTracks(cdr).reduce((m, t) => m + (t.duration
 
 export async function newCdr(fields = {}) {
   const today = new Date();
-  const cdr = { id: 'cdr-' + db.uid(), title: `Mix #${lib.cdrs.length + 1}`, dye: 'gold', marker: 'black',
+  const cdr = { id: 'cdr-' + db.uid(), title: `Mix #${lib.cdrs.length + 1}`, dye: 'blank', marker: 'pink',
                 date: `${today.getMonth() + 1}/${today.getDate()}/${String(today.getFullYear()).slice(2)}`,
-                tracks: [], created: Date.now(), v: 1, ...fields };
+                tracks: [], created: Date.now(), v: 1, case: 'black', ...fields };
+  if (!Array.isArray(cdr.doodles)) cdr.doodles = doodlesOf(cdr);
   touch(cdr);
   lib.cdrs.push(cdr);
   await saveCdrs();
