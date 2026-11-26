@@ -7,26 +7,27 @@ import * as plex from './plex.js';
 export const AUDIO = { mp3: 'audio/mpeg', m4a: 'audio/mp4', mp4: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac',
                        ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg', wav: 'audio/wav', aif: 'audio/aiff', aiff: 'audio/aiff' };
 const IMAGE = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif' };
-const FRONT = /^(cover|folder|front|album|albumart|artwork)\b/i;
-const BACK = /^(back|back cover|cover_back|backcover|tray|inlay|rear)\b/i;
-const DISC = /^(?:cd|disc|disk|media)\s*[-_.]?\s*(\d*)$/i;
+export const FRONT = /^(cover|folder|front|album|albumart|artwork)\b/i;
+export const BACK = /^(back|back cover|cover_back|backcover|tray|inlay|rear)\b/i;
+export const DISC = /^(?:cd|disc|disk|media)\s*[-_.]?\s*(\d*)$/i;
 // Folders like "CD1", "Disc 2", "disc_02" inside an album folder: one disc of a multi-disc album.
 export const DISC_DIR = /^(?:cd|disc|disk)\s*[-_.]?\s*(\d{1,2})\b/i;
-const BOOKLET = /^(booklet|book|page|scan|inside|insert|liner|leaflet|lyrics)[\s_\-]*\d*/i;
-const BOOKLET_DIRS = new Set(['scans', 'scan', 'booklet', 'artwork', 'art', 'covers', 'images']);
+export const BOOKLET = /^(booklet|book|page|scan|inside|insert|liner|leaflet|lyrics)[\s_\-]*\d*/i;
+export const BOOKLET_DIRS = new Set(['scans', 'scan', 'booklet', 'artwork', 'art', 'covers', 'images']);
 
-export const lib = { tracks: new Map(), albums: new Map(), cdrs: [], pending: {} };
+export const lib = { tracks: new Map(), albums: new Map(), cdrs: [], pending: {}, tombstones: [], cdrRev: 0 };
 
 const ext = name => (name.split('.').pop() || '').toLowerCase();
 const stem = name => name.split('/').pop().replace(/\.[^.]+$/, '');
 const dirOf = path => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '');
-const natural = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+export const natural = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 
 export async function loadLibrary() {
   lib.tracks = new Map(await db.all('tracks'));
   lib.albums = new Map(await db.all('albums'));
   lib.cdrs = (await db.get('extras', 'cdrs')) || [];
   lib.pending = (await db.get('extras', 'pending')) || {};
+  lib.tombstones = (await db.get('extras', 'cdrTombstones')) || [];
   // Tidy up songs left behind by an import that was interrupted.
   const owned = new Set([...lib.albums.values()].flatMap(a => a.trackIds));
   for (const id of [...lib.tracks.keys()]) {
@@ -54,8 +55,11 @@ export async function imageFor(id) {
   if (bitmaps.has(id)) return bitmaps.get(id);
   const promise = (async () => {
     let blob = await db.get('images', id);
-    if (!blob && id.startsWith('plexart:') && plex.plex.connected) {
-      try { blob = await plex.fetchArt(id.slice(8)); await db.put('images', id, blob); }
+    if (!blob && (id.startsWith('plexart:') || id.startsWith('plexphoto:')) && plex.plex.connected) {
+      try {
+        blob = id.startsWith('plexart:') ? await plex.fetchArt(id.slice(8)) : await plex.fetchArt(id.slice(10), 1800);
+        await db.put('images', id, blob);
+      }
       catch (e) { bitmaps.delete(id); return null; }   // try again later (e.g. back on home Wi-Fi)
     }
     if (!blob) return null;
@@ -73,7 +77,7 @@ export async function imageFor(id) {
 
 export async function imageBlob(id) {
   if (!id) return null;
-  if (id.startsWith('plexart:')) await imageFor(id);
+  if (id.startsWith('plexart:') || id.startsWith('plexphoto:')) await imageFor(id);
   return db.get('images', id);
 }
 
@@ -248,6 +252,7 @@ export async function applyPlexLibrary({ albums, tracks }) {
   for (const a of albums) {
     const old = lib.albums.get(a.key);
     if (old && old.custom) a.custom = old.custom;
+    if (old && old.pc) a.pc = old.pc;
     adoptPending(a);
   }
   const gone = oldTracks.filter(t => !fresh.has(t.id)).map(t => t.id);
@@ -304,8 +309,17 @@ export async function saveTrack(t) { return db.put('tracks', t.id, t); }
 // ---------------------------------------------------------------- your own art, obi designs and lyrics
 
 // An album's picture of a kind ('cover' | 'back' | 'disc'): yours if you added one, else the album's own.
-export function art(album, kind) { return (album && ((album.custom && album.custom[kind]) || album[kind])) || null; }
-export function bookletPages(album) { return [...((album && album.booklet) || []), ...((album && album.custom && album.custom.booklet) || [])]; }
+// Pictures come from, in order: ones you added on this phone (custom), ones from the PC (pc), the album's own.
+export function art(album, kind) {
+  if (!album) return null;
+  return (album.custom && album.custom[kind]) || (album.pc && album.pc[kind]) || album[kind] ||
+         (kind === 'cover' && album.pc && album.pc.folderCover) || null;
+}
+export function bookletPages(album) {
+  if (!album) return [];
+  return [...(album.booklet || []), ...((album.pc && album.pc.booklet) || []), ...((album.custom && album.custom.booklet) || [])];
+}
+export const obiFor = album => (album && ((album.custom && album.custom.obi) || (album.pc && album.pc.obi))) || null;
 
 async function saveAlbum(album) { await db.put('albums', album.key, album); }
 
@@ -371,6 +385,9 @@ export async function setTrackLyrics(id, text) {
 
 export const CDR_MINUTES = 80;
 export async function saveCdrs() { await db.put('extras', 'cdrs', lib.cdrs); }
+export async function saveTombstones() { await db.put('extras', 'cdrTombstones', lib.tombstones); }
+// Every change to a CD-R is stamped, so syncing knows which side changed it last.
+const touch = cdr => { cdr.updated = Date.now(); cdr.v = (cdr.v || 0) + 1; lib.cdrRev++; };
 export const findCdr = id => lib.cdrs.find(c => c.id === id) || null;
 export const cdrTracks = cdr => (cdr ? cdr.tracks.map(id => lib.tracks.get(id)).filter(Boolean) : []);
 export const cdrMinutes = cdr => cdrTracks(cdr).reduce((m, t) => m + (t.duration || 0), 0) / 60;
@@ -380,24 +397,30 @@ export async function newCdr(fields = {}) {
   const cdr = { id: 'cdr-' + db.uid(), title: `Mix #${lib.cdrs.length + 1}`, dye: 'gold', marker: 'black',
                 date: `${today.getMonth() + 1}/${today.getDate()}/${String(today.getFullYear()).slice(2)}`,
                 tracks: [], created: Date.now(), v: 1, ...fields };
+  touch(cdr);
   lib.cdrs.push(cdr);
   await saveCdrs();
   return cdr;
 }
 
-export async function updateCdr(cdr, fields) { Object.assign(cdr, fields); cdr.v = (cdr.v || 0) + 1; await saveCdrs(); }
+export async function updateCdr(cdr, fields) { Object.assign(cdr, fields); touch(cdr); await saveCdrs(); }
 
 // Adds songs (skipping ones already on the disc). Returns how many went on.
 export async function burnTo(cdr, ids) {
   const have = new Set(cdr.tracks);
   const add = ids.filter(id => !have.has(id) && lib.tracks.has(id));
   cdr.tracks.push(...add);
-  cdr.v = (cdr.v || 0) + 1;
+  if (add.length) touch(cdr);
   await saveCdrs();
   return add.length;
 }
 
-export async function deleteCdr(cdr) { lib.cdrs = lib.cdrs.filter(c => c !== cdr); await saveCdrs(); }
+export async function deleteCdr(cdr) {
+  lib.cdrs = lib.cdrs.filter(c => c !== cdr);
+  lib.cdrRev++;
+  if (cdr.plexKey) { lib.tombstones.push({ id: cdr.id, plexKey: cdr.plexKey }); await saveTombstones(); }
+  await saveCdrs();
+}
 
 // ---------------------------------------------------------------- backups restored before their albums exist
 
@@ -455,6 +478,9 @@ export function discCount(album) {
 }
 // The picture for disc n of an album, if it has one (disc 2 can have its own, like cd2.jpg).
 export function discArt(album, n) {
+  if (n > 1 && album && album.pc && album.pc.discs && album.pc.discs[n]) return album.pc.discs[n];
   if (n > 1 && album && album.discs && album.discs[n]) return album.discs[n];
   return art(album, 'disc');
 }
+
+export async function saveAlbums(albums) { await db.putMany('albums', albums.map(a => [a.key, a])); }

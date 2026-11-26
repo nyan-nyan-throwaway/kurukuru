@@ -6,14 +6,16 @@ import { DiscView } from './disc.js';
 import { LcdView } from './lcd.js';
 import { lib, loadLibrary, importFiles, albumTracks, sortedAlbums, imageFor, imageBlob, audioBlob, deleteAlbum, cachedLevels, saveLevels,
          applyPlexLibrary, forgetPlex, keepAlbum, unkeepAlbum, saveTrack, art, bookletPages, setAlbumArt, resetAlbumArt, setObi,
-         setTrackLyrics, decodeText, discOf, discCount, discArt, findCdr, cdrTracks, cdrMinutes, newCdr, updateCdr, burnTo, deleteCdr, CDR_MINUTES } from './library.js';
+         setTrackLyrics, decodeText, obiFor as albumObi, discOf, discCount, discArt, saveCdrs, saveTombstones, findCdr, cdrTracks, cdrMinutes, newCdr, updateCdr, burnTo, deleteCdr, CDR_MINUTES } from './library.js';
 import { makeBackup, restoreBackup } from './backup.js';
+import { syncCdrs } from './cdrsync.js';
+import { syncArt } from './artsync.js';
 import * as plexApi from './plex.js';
 const { plex } = plexApi;
 import { lyricsFor, unlockSounds, playSound, sounds, analyseLevels } from './audiofx.js';
 import { storageInfo, askPersist } from './db.js';
 
-const VERSION = '1.3';
+const VERSION = '1.5';
 const $ = id => document.getElementById(id);
 
 // ---------------------------------------------------------------- settings
@@ -434,7 +436,7 @@ async function albumArt(album) {
 }
 
 async function obiOf(album) {
-  const o = album.custom && album.custom.obi;
+  const o = albumObi(album);
   if (!o) return {};
   return o.image ? { ...o, imageObj: await imageFor(o.image) } : o;
 }
@@ -613,6 +615,7 @@ function showPage(name) {
 
 // Something about a CD-R changed: redraw wherever it shows.
 function cdrChanged(cdr) {
+  scheduleCdrSync();
   if (shownCdr === cdr.id) openCdr(cdr.id, { keepFlip: true });
   if (playingCdr === cdr.id) { renderNow(); refreshDisc(false); }
   if (!$('page-library').hidden) renderShelf();
@@ -733,7 +736,7 @@ async function busy(task, doneText) {
 let linking = null;
 function plexUi() {
   $('plexStatus').textContent = plex.connected
-    ? `Connected to “${plex.serverName}”. ${[...lib.albums.values()].filter(a => a.source === 'plex').length} albums stream from it.`
+    ? `Connected to “${plex.serverName}”. ${[...lib.albums.values()].filter(a => a.source === 'plex').length} albums stream from it. ${cdrSyncNote || 'CD-Rs sync with Plex playlists, so the desktop app has them too.'} ${artNote}`
     : 'Stream your Plex music library instead of storing it on your phone.';
   $('plexConnect').hidden = plex.connected || !!linking;
   $('plexSync').hidden = $('plexDisconnect').hidden = !plex.connected;
@@ -749,7 +752,86 @@ async function syncPlex(quiet) {
   }
   plexUi();
   if (!$('settings').hidden) openSettings();
+  await runCdrSync();
+  await runArtSync();
 }
+
+let artSyncBusy = false, artSyncAt = 0, artNote = '';
+async function runArtSync() {
+  if (artSyncBusy || !plex.connected) return;
+  artSyncBusy = true;
+  try {
+    const r = await syncArt();
+    artSyncAt = Date.now();
+    artNote = r.noLibrary ? 'To get booklets and obi designs from the PC, add a Photos library in Plex over your Music folder (see the README).'
+                          : `Booklets & pictures from the PC: ${r.matched} album${r.matched === 1 ? '' : 's'}${r.index ? ', with your obi designs' : ''}.`;
+    if (r.albums) {
+      repaintCases();
+      if (current && !playingCdr) refreshDisc(false);
+      if (shownAlbum) openAlbum(shownAlbum);
+    }
+  } catch (e) {
+    console.warn('Picture sync:', e);
+    artNote = 'Pictures from the PC will try again: ' + (e.message || e);
+  } finally {
+    artSyncBusy = false;
+    if (!$('settings').hidden) plexUi();
+  }
+}
+
+// ---------------------------------------------------------------- CD-Rs ⇄ Plex playlists (shared with the desktop app)
+
+let cdrSyncTimer = null, cdrSyncBusy = false, cdrSyncNote = '';
+function scheduleCdrSync(delay = 4000) {
+  if (!plex.connected) return;
+  clearTimeout(cdrSyncTimer);
+  cdrSyncTimer = setTimeout(runCdrSync, delay);
+}
+
+async function runCdrSync() {
+  if (cdrSyncBusy || !plex.connected) return;
+  cdrSyncBusy = true;
+  const rev = lib.cdrRev;
+  const tombstones = [...lib.tombstones];
+  const toKeys = c => c.tracks.filter(id => id.startsWith('plex-')).map(id => id.slice(5));
+  const fromKeys = (old, keys) => {
+    const tracks = keys.map(k => 'plex-' + k);
+    (old || []).forEach((id, i) => { if (!id.startsWith('plex-')) tracks.splice(Math.min(i, tracks.length), 0, id); });   // songs only on this phone stay put
+    return tracks;
+  };
+  try {
+    const out = await syncCdrs(JSON.parse(JSON.stringify(lib.cdrs)), tombstones, toKeys, fromKeys);
+    const sent = new Set(tombstones.map(t => t.id));
+    lib.tombstones = lib.tombstones.filter(t => !sent.has(t.id));
+    await saveTombstones();
+    if (rev !== lib.cdrRev) { cdrSyncBusy = false; scheduleCdrSync(500); return; }   // changed meanwhile: go round again
+    const changed = JSON.stringify(out) !== JSON.stringify(lib.cdrs);
+    lib.cdrs = out;
+    const t = new Date();
+    cdrSyncNote = `CD-Rs synced ${t.getHours()}:${String(t.getMinutes()).padStart(2, '0')}`;
+    if (changed) {
+      for (const c of lib.cdrs) c.v = (c.v || 0) + 1;
+      await saveCdrs();
+      if (playingCdr && !findCdr(playingCdr)) playingCdr = null;
+      renderNow();
+      if (shownCdr) { if (findCdr(shownCdr)) openCdr(shownCdr, { keepFlip: true }); else showPage('library'); }
+      else if (!$('page-library').hidden) renderShelf();
+      if (playingCdr) refreshDisc(false);
+    }
+  } catch (e) {
+    console.warn('CD-R sync:', e);
+    cdrSyncNote = 'CD-R sync will try again: ' + (e.message || e);
+  } finally {
+    cdrSyncBusy = false;
+    if (!$('settings').hidden) plexUi();
+  }
+}
+setInterval(() => scheduleCdrSync(0), 3 * 60 * 1000);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  scheduleCdrSync(1500);
+  if (Date.now() - artSyncAt > 10 * 60 * 1000) setTimeout(runArtSync, 3000);
+});
 
 $('plexConnect').onclick = async () => {
   playSound('press');
@@ -960,6 +1042,7 @@ async function throwAway(cdr) {
   if (!confirm(`Throw away the CD-R “${cdr.title}”? The songs stay in your library.`)) return;
   if (playingCdr === cdr.id) stopAndEject();
   await deleteCdr(cdr);
+  scheduleCdrSync();
   renderNow(); showPage('library');
   toast('CD-R thrown away.');
 }
@@ -1006,6 +1089,7 @@ $('cdrSave').onclick = async () => {
   $('cdrEditor').hidden = true;
   if (cdrEditing) { await updateCdr(cdrEditing, fields); cdrChanged(cdrEditing); return; }
   const cdr = await newCdr(fields);
+  scheduleCdrSync();
   renderNow();
   if (cdrBurnAfter && cdrBurnAfter.length) { await burn(cdr, cdrBurnAfter); return; }
   openCdr(cdr.id);
@@ -1170,7 +1254,7 @@ const DESIGN_NAMES = { bands: 'Bands', gradient: 'Gradient', candy: 'Candy strip
 async function openObiEditor(key) {
   obiFor = key;
   const album = lib.albums.get(key);
-  const o = (album.custom && album.custom.obi) || {};
+  const o = albumObi(album) || {};
   obiDraft = { design: o.design || '', colors: o.colors ? [...o.colors] : null, label: o.label || '', catalogue: o.catalogue || '', image: o.image || null };
   obiScanFile = null;
   obiScanImg = o.image ? await imageFor(o.image) : null;
@@ -1366,5 +1450,5 @@ async function start() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 document.addEventListener('visibilitychange', () => { last = performance.now(); });
-window.kurukuru = { lib, state, settings, plex: plexApi, makeBackup, get playingCdr() { return playingCdr; } };   // handy for debugging in Web Inspector
+window.kurukuru = { lib, state, settings, plex: plexApi, makeBackup, updateCdr, newCdr, burnTo, syncCdrsNow: () => runCdrSync(), syncArtNow: () => runArtSync(), get artNote() { return artNote; }, get cdrSyncNote() { return cdrSyncNote; }, get playingCdr() { return playingCdr; } };   // handy for debugging in Web Inspector
 start();

@@ -149,14 +149,22 @@ export async function fetchLibrary(progress = () => {}) {
                     container: (t.Media[0].container || '').toLowerCase(), albumKey: album.key,
                     title: t.title || 'Untitled', artist: t.originalTitle || t.grandparentTitle || album.artist, album: album.album,
                     track: t.index || 0, disc: t.parentIndex || 0, year: album.year, duration: (t.duration || 0) / 1000,
-                    lyrics: null, file: (part.file || '').split('/').pop(), added: (t.addedAt || 0) * 1000 });
+                    lyrics: null, file: (part.file || '').split('/').pop(), path: part.file || '', added: (t.addedAt || 0) * 1000 });
       album.trackIds.push(id);
+      if (!album.folder && part.file) album.folder = albumFolder(part.file);
     }
   }
   return { albums: albums.filter(a => a.trackIds.length), tracks };
 }
 
 export function streamUrl(track) { return srv(track.part); }
+
+// The album's own folder for a song file: its folder, or the one above a CD1/Disc 2-style folder.
+export function albumFolder(file) {
+  const dir = file.slice(0, file.lastIndexOf('/'));
+  const name = dir.slice(dir.lastIndexOf('/') + 1);
+  return /^(?:cd|disc|disk)\s*[-_.]?\s*\d{1,2}\b/i.test(name) ? dir.slice(0, dir.lastIndexOf('/')) : dir;
+}
 
 export async function fetchArt(thumb, size = 600) {
   const url = srv('/photo/:/transcode', { width: size, height: size, minSize: 1, upscale: 1, url: thumb });
@@ -210,3 +218,73 @@ export async function fetchSong(track, onProgress) {
   }
   return new Blob(chunks, { type: res.headers.get('content-type') || 'audio/mpeg' });
 }
+
+// ---------------------------------------------------------------- playlists (for CD-R sync)
+
+let machine = null;
+async function machineId() {
+  if (!machine || machine.uri !== cfg.server.uri) {
+    const ident = await request(srv('/identity'));
+    machine = { uri: cfg.server.uri, id: (ident.MediaContainer || {}).machineIdentifier || cfg.server.id };
+  }
+  return machine.id;
+}
+const call = (method, path, params = {}) => request(srv(path, params), { method, timeout: 30000 });
+const listUri = async keys => `server://${await machineId()}/com.plexapp.plugins.library/library/metadata/${keys.join(',')}`;
+
+export const playlists = {
+  async list() {
+    const mc = (await call('GET', '/playlists', { playlistType: 'audio' })).MediaContainer || {};
+    return (mc.Metadata || []).filter(p => !p.smart);
+  },
+  async keys(key) {
+    const mc = (await call('GET', `/playlists/${key}/items`)).MediaContainer || {};
+    return (mc.Metadata || []).map(t => String(t.ratingKey));
+  },
+  async create(title, keys, summary) {
+    const mc = (await call('POST', '/playlists', { type: 'audio', smart: 0, title, uri: await listUri(keys) })).MediaContainer || {};
+    const key = String(((mc.Metadata || [])[0] || {}).ratingKey || '');
+    if (!key) throw new Error('Plex didn’t make the playlist.');
+    await call('PUT', `/playlists/${key}`, { title, summary });
+    return key;
+  },
+  async update(key, title, summary, keys) {
+    await call('PUT', `/playlists/${key}`, { title, summary });
+    await call('DELETE', `/playlists/${key}/items`);
+    if (keys.length) await call('PUT', `/playlists/${key}/items`, { uri: await listUri(keys) });
+  },
+  async setSummary(key, title, summary) { await call('PUT', `/playlists/${key}`, { title, summary }); },
+  async remove(key) { await call('DELETE', `/playlists/${key}`); },
+};
+
+// ---------------------------------------------------------------- photos (booklets, obi designs and pictures from the PC)
+
+export const photos = {
+  async sections() {
+    const dirs = ((await request(srv('/library/sections'))).MediaContainer || {}).Directory || [];
+    return dirs.filter(d => d.type === 'photo');
+  },
+  // Every photo in a Photos library: { thumb, part, file, updated }.
+  async all(sectionKey) {
+    const shape = p => {
+      const part = (((p.Media || [])[0] || {}).Part || [])[0] || {};
+      return part.file ? { thumb: p.thumb || `/library/metadata/${p.ratingKey}/thumb/${p.updatedAt || 0}`, part: part.key, file: part.file, updated: p.updatedAt || 0 } : null;
+    };
+    let items = await getAll(`/library/sections/${sectionKey}/all`, { type: 13 });
+    if (items.some(shape)) return items.map(shape).filter(Boolean);
+    // Older servers list folders (photo albums) instead: walk them.
+    const out = [], queue = [`/library/sections/${sectionKey}/all`];
+    while (queue.length && out.length < 50000) {
+      for (const it of await getAll(queue.shift(), {})) {
+        if (it.key && it.key.endsWith('/children')) queue.push(it.key);
+        else { const p = shape(it); if (p) out.push(p); }
+      }
+    }
+    return out;
+  },
+  async original(partKey) {
+    const res = await fetch(srv(partKey));
+    if (!res.ok) throw new Error('photo ' + res.status);
+    return new Uint8Array(await res.arrayBuffer());
+  },
+};
