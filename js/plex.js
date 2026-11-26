@@ -41,13 +41,13 @@ export const plex = {
 // Returns { code, wait() } — show the code, the person types it at plex.tv/link, wait() resolves when done.
 export async function startLink() {
   const pin = await request(`${PLEX_TV}/api/v2/pins?strong=false`, { method: 'POST' });
-  let cancelled = false;
+  let canceled = false;
   return {
     code: pin.code,
-    cancel() { cancelled = true; },
+    cancel() { canceled = true; },
     async wait() {
       const until = Date.now() + 15 * 60000;
-      while (!cancelled && Date.now() < until) {
+      while (!canceled && Date.now() < until) {
         await new Promise(r => setTimeout(r, 2000));
         const p = await request(`${PLEX_TV}/api/v2/pins/${pin.id}`).catch(() => null);
         if (p && p.authToken) {

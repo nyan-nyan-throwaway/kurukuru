@@ -12,10 +12,10 @@ import { syncCdrs } from './cdrsync.js';
 import { syncArt } from './artsync.js';
 import * as plexApi from './plex.js';
 const { plex } = plexApi;
-import { lyricsFor, unlockSounds, playSound, sounds, analyseLevels } from './audiofx.js';
+import { lyricsFor, unlockSounds, playSound, sounds, analyzeSpectrum } from './audiofx.js';
 import { storageInfo, askPersist } from './db.js';
 
-const VERSION = '1.6';
+const VERSION = '1.7';
 const $ = id => document.getElementById(id);
 
 // ---------------------------------------------------------------- settings
@@ -33,7 +33,7 @@ audio.setAttribute('playsinline', '');
 let audioUrl = null;
 const state = {
   title: 'Insert a disc', subtitle: 'Tap the lid to add music', trackNo: null, duration: 0, state: 'nodisc',
-  shuffle: false, repeat: false, trackCount: 0, calendar: [0, 0], levels: null, showMeter: settings.meter,
+  shuffle: false, repeat: false, trackCount: 0, calendar: [0, 0], levels: null, spectrum: null, showMeter: settings.meter,
   lyrics: [], showLyrics: settings.lyrics, lidOpen: false, flash: null, disc: null,
   position: () => (current ? audio.currentTime * 1000 : 0),
 };
@@ -56,7 +56,7 @@ function toast(text, seconds = 3.5) {
   clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.hidden = true; }, seconds * 1000);
 }
 
-// ---------------------------------------------------------------- colours
+// ---------------------------------------------------------------- colors
 
 function setVars() {
   const T = THEME, night = T.name === 'Night';
@@ -126,7 +126,7 @@ function idleText() {
   else { state.state = 'nodisc'; state.title = 'Insert a disc'; state.subtitle = 'Tap the lid to add music'; }
 }
 
-// The disc in the player, its print and the colours, for what's playing now.
+// The disc in the player, its print and the colors, for what's playing now.
 async function refreshDisc(animate) {
   if (!current) return null;
   const track = current, cdr = playingCdr && findCdr(playingCdr);
@@ -169,6 +169,7 @@ async function playTrack(id, { autoplay = true, animate = true, cdr = null } = {
   state.subtitle = [track.artist, track.album, disc_ ? '' : track.year].filter(Boolean).join('  ·  ');
   state.lyrics = lyricsFor(track.lyrics, track.duration);
   state.levels = null;
+  state.spectrum = null;
   const cover = await refreshDisc(animate);
   const streamed = track.source === 'plex' && !track.local;
   const blob = streamed ? null : await audioBlob(id);
@@ -194,15 +195,22 @@ async function playTrack(id, { autoplay = true, animate = true, cdr = null } = {
   markPlaying();
   updateMediaSession(track, disc_ ? cdrArtwork(disc_) : cover);
   try { localStorage.setItem('kurukuru-last', JSON.stringify({ id, cdr: playingCdr })); } catch (e) { /* ignore */ }
-  // The level meter (and the glow) need the song's loudness: cached, or worked out in the background.
-  const levels = await cachedLevels(id);
-  if (levels) { if (current === track) state.levels = levels; }
-  else if (settings.meter && (blob || (track.size && track.size < 60e6))) setTimeout(async () => {
+  // The visualizer (and the glow) need the song measured: cached, or worked out in the background once.
+  const cached = await cachedLevels(id);
+  const fresh = cached && cached.v === 2;
+  if (cached && current === track) {
+    state.levels = fresh ? cached.levels : cached;        // older cache: loudness only, until re-measured
+    state.spectrum = fresh ? cached.spectrum : null;
+  }
+  if (!fresh && settings.meter && (blob || (track.size && track.size < 60e6))) setTimeout(async () => {
     try {
       if (current !== track) return;
-      const lv = await analyseLevels(blob || await plexApi.fetchSong(track));
-      if (lv.length) { await saveLevels(id, lv); if (current === track) state.levels = lv; }
-    } catch (e) { /* no meter for this one */ }
+      const result = await analyzeSpectrum(blob || await plexApi.fetchSong(track));
+      if (result) {
+        await saveLevels(id, result);
+        if (current === track) { state.levels = result.levels; state.spectrum = result.spectrum; }
+      }
+    } catch (e) { /* no visualizer for this one */ }
   }, 1500);
 }
 
@@ -848,7 +856,9 @@ async function runCdrSync() {
     const changed = JSON.stringify(out) !== JSON.stringify(lib.cdrs);
     lib.cdrs = out;
     const t = new Date();
-    cdrSyncNote = `CD-Rs synced ${t.getHours()}:${String(t.getMinutes()).padStart(2, '0')}`;
+    const inPlex = out.filter(c => c.plexKey).length;
+    cdrSyncNote = `CD-Rs synced ${t.getHours()}:${String(t.getMinutes()).padStart(2, '0')}: ${inPlex} in Plex` +
+      (inPlex ? '.' : ' yet. To get the desktop app’s CD-Rs, connect it to Plex too (its Settings → Plex · CD-R sync).');
     if (changed) {
       for (const c of lib.cdrs) c.v = (c.v || 0) + 1;
       await saveCdrs();
@@ -1008,7 +1018,7 @@ function cdrMenu(cdr) {
   if (!cdr) return;
   menu(cdr.title, [
     { label: 'Add songs…', run: () => openSongPicker(cdr) },
-    { label: 'Edit the disc…', note: 'title, date, dye and marker colour', run: () => openCdrEditor(cdr, null) },
+    { label: 'Edit the disc…', note: 'title, date, dye and marker color', run: () => openCdrEditor(cdr, null) },
     { label: 'Throw away this CD-R', danger: true, note: 'the songs stay in your library', run: () => throwAway(cdr) },
   ]);
 }
@@ -1239,7 +1249,7 @@ async function lyricsChanged(id, text) {
 // ---------------------------------------------------------------- pictures you add
 
 let artFor = null, artPick = null, artUrls = [];
-const ART_KINDS = [['cover', 'Front cover', 'The jewel case, disc colours and lock screen'], ['back', 'Back cover', 'Shown when you flip the case'],
+const ART_KINDS = [['cover', 'Front cover', 'The jewel case, disc colors and lock screen'], ['back', 'Back cover', 'Shown when you flip the case'],
                    ['disc', 'Disc print', 'Printed on the disc itself']];
 
 function openArtSheet(key) {
@@ -1332,16 +1342,16 @@ async function openObiEditor(key) {
   obiScanImg = o.image ? await imageFor(o.image) : null;
   $('obiDesign').innerHTML = `<option value="">Automatic</option>` + OBI_DESIGNS.map(d => `<option value="${d}">${DESIGN_NAMES[d] || d}</option>`).join('') + `<option value="none">No obi</option>`;
   $('obiDesign').value = obiDraft.design; $('obiLabel').value = obiDraft.label; $('obiCatalogue').value = obiDraft.catalogue;
-  await obiColours();
+  await obiColors();
   syncObi();
   $('obiEditor').hidden = false;
 }
 
-async function obiColours() {
+async function obiColors() {
   const album = lib.albums.get(obiFor);
   const { palette } = await albumArt(album);
   const { cols } = obiEffective(album.album, album.artist, palette, { colors: obiDraft.colors });
-  $('obiColours').innerHTML = cols.map((c, i) => `<span class="swatch-col"><input type="color" class="swatch" data-n="${i}" value="${hex(c)}">${['Main', 'Second', 'Third', 'Fourth'][i]}</span>`).join('');
+  $('obiColors').innerHTML = cols.map((c, i) => `<span class="swatch-col"><input type="color" class="swatch" data-n="${i}" value="${hex(c)}">${['Main', 'Second', 'Third', 'Fourth'][i]}</span>`).join('');
 }
 
 async function syncObi() {
@@ -1358,8 +1368,8 @@ async function syncObi() {
 $('obiDesign').addEventListener('change', () => { obiDraft.design = $('obiDesign').value; syncObi(); });
 $('obiLabel').addEventListener('input', () => { obiDraft.label = $('obiLabel').value; syncObi(); });
 $('obiCatalogue').addEventListener('input', () => { obiDraft.catalogue = $('obiCatalogue').value; syncObi(); });
-$('obiColours').addEventListener('input', () => {
-  obiDraft.colors = [...document.querySelectorAll('#obiColours input')].map(i => i.value);
+$('obiColors').addEventListener('input', () => {
+  obiDraft.colors = [...document.querySelectorAll('#obiColors input')].map(i => i.value);
   syncObi();
 });
 $('obiScan').onclick = () => { playSound('press'); artPick = 'obi'; const i = $('imagePicker'); i.multiple = false; i.value = ''; i.click(); };
@@ -1369,7 +1379,7 @@ $('obiReset').onclick = async () => {
   obiDraft = { design: '', colors: null, label: '', catalogue: '', image: null };
   obiScanFile = null; obiScanImg = null;
   $('obiDesign').value = ''; $('obiLabel').value = ''; $('obiCatalogue').value = '';
-  await obiColours(); syncObi();
+  await obiColors(); syncObi();
 };
 $('obiCancel').onclick = () => { $('obiEditor').hidden = true; };
 $('obiSave').onclick = async () => {

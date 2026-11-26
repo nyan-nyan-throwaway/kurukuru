@@ -1,4 +1,4 @@
-/* Kurukuru CD (web): a portable CD player for your iPhone. Colours come from CSS variables set by app.js. */
+/* Kurukuru CD (web): a portable CD player for your iPhone. Colors come from CSS variables set by app.js. */
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; height: 100%; }
 body {

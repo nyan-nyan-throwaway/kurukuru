@@ -1,4 +1,4 @@
-// CD-R doodles and case colours. Generated from the same list as the desktop app (keep them in step).
+// CD-R doodles and case colors. Generated from the same list as the desktop app (keep them in step).
 export const DOODLES = {
  "star": [
   "Star",

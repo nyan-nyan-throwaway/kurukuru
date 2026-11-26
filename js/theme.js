@@ -1,4 +1,4 @@
-// Colours: Day/Night themes, album palettes and the album colour scheme (ported from the desktop app).
+// Colors: Day/Night themes, album palettes and the album color scheme (ported from the desktop app).
 
 export function parse(c) {
   if (typeof c !== 'string') return c;
@@ -13,7 +13,7 @@ export function mix(a, b, t) {
   a = parse(a); b = parse(b);
   return { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t, a: a.a + (b.a - a.a) * t };
 }
-// HSV on Qt's scale: hue 0-359 (-1 for grey), saturation and value 0-255.
+// HSV on Qt's scale: hue 0-359 (-1 for gray), saturation and value 0-255.
 export function toHsv(c) {
   c = parse(c);
   const r = c.r / 255, g = c.g / 255, b = c.b / 255;
@@ -88,7 +88,7 @@ export function setTheme(name) {
   Object.assign(THEME, THEMES[name] || THEMES.Day, { name: THEMES[name] ? name : 'Day' });
 }
 
-// Representative colours of a picture, most prominent first (saturated hues favoured).
+// Representative colors of a picture, most prominent first (saturated hues favoured).
 const paletteCache = new Map();
 export function albumPalette(image, count = 4, cacheKey = null) {
   if (cacheKey && paletteCache.has(cacheKey + ':' + count)) return paletteCache.get(cacheKey + ':' + count);

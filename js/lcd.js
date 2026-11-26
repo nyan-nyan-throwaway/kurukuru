@@ -20,11 +20,42 @@ export class LcdView {
     return best < 0 ? null : s.lyrics[best][1];
   }
 
-  level(i, pos, cols) {
+  // The visualizer: 16 frequency bands spread over the columns, bass on the left, treble on the right.
+  bandTarget(i, cols, pos) {
     const s = this.s;
-    const idx = Math.floor(pos / 80) + (i - Math.floor(cols / 2)) * 3;
-    if (s.state === 'play' && s.levels && idx >= 0 && idx < s.levels.length) return Math.min(1, s.levels[idx] * (.65 + .35 * ((i * 7) % 11) / 10));
+    if (s.state !== 'play') return 0;
+    const sp = s.spectrum, B = 16;
+    if (sp && sp.length >= B) {
+      const frames = sp.length / B, fpos = pos / 40;
+      const f0 = Math.max(0, Math.min(frames - 1, Math.floor(fpos))), f1 = Math.min(frames - 1, f0 + 1), ft = Math.max(0, fpos - f0);
+      const bpos = i * (B - 1) / Math.max(1, cols - 1), b0 = Math.floor(bpos), b1 = Math.min(B - 1, b0 + 1), bt = bpos - b0;
+      const at = (f, b) => sp[f * B + b] / 255;
+      const v0 = at(f0, b0) * (1 - bt) + at(f0, b1) * bt, v1 = at(f1, b0) * (1 - bt) + at(f1, b1) * bt;
+      return v0 + (v1 - v0) * ft;
+    }
+    if (s.levels) {   // still measuring this song: a gentle made-up shape that follows the loudness
+      const lv = s.levels[Math.floor(pos / 80)] || 0;
+      const shape = .55 + .45 * Math.sin(i * 1.7 + pos / 310) * Math.cos(i * .6 - pos / 530);
+      return Math.min(1, lv * (.45 + .55 * shape));
+    }
     return 0;
+  }
+
+  // Bars leap up and fall back smoothly; peak caps float for a moment, then drop.
+  stepMeter(cols, pos) {
+    const t = performance.now(), dt = Math.min(.1, (t - (this.meterT || t)) / 1000);
+    this.meterT = t;
+    this.bars = this.bars || []; this.caps = this.caps || [];
+    for (let i = 0; i < cols; i++) {
+      const target = this.bandTarget(i, cols, pos);
+      let b = this.bars[i] || 0;
+      b = target > b ? b + (target - b) * .75 : Math.max(target, b - dt * 1.7);
+      this.bars[i] = b;
+      const cap = this.caps[i] || (this.caps[i] = { v: 0, hold: 0, vel: 0 });
+      if (b >= cap.v) { cap.v = b; cap.hold = .35; cap.vel = 0; }
+      else if (cap.hold > 0) cap.hold -= dt;
+      else { cap.vel += dt * 2.4; cap.v = Math.max(b, cap.v - cap.vel * dt); }
+    }
   }
 
   draw() {
@@ -138,17 +169,24 @@ export class LcdView {
         const m = mix(T.fill2, T.fill, r / Math.max(1, rows - 1));
         meterColors.push(night ? rgba(mix(m, on, .1)) : rgba(fromHsv(Math.max(0, toHsv(m).h), Math.min(255, toHsv(m).s + 70), 185)));
       }
+      this.stepMeter(cols, now);
+      const capColor = night ? T.led_on : T.accent;
       for (let i = 0; i < cols; i++) {
-        const lv = this.level(i, now, cols);
-        this.peaks[i] = Math.max(lv, this.peaks[i] - .02);
-        const litn = Math.round(lv * rows), peak = Math.min(rows - 1, Math.round(this.peaks[i] * rows));
+        const b = this.bars[i], cap = this.caps[i].v;
+        const litn = Math.round(b * rows);
+        const x = x0 + i * (cw + gap);
         for (let r = 0; r < rows; r++) {
-          if (r === peak && this.peaks[i] > .05 && r >= litn) ctx.fillStyle = night ? T.led_on : T.accent;
-          else if (r < litn) ctx.fillStyle = meterColors[r];
-          else ctx.fillStyle = ghost;
-          ctx.fillRect(x0 + i * (cw + gap), bottom - (r + 1) * rh - r * 2, cw, rh);
+          ctx.fillStyle = r < litn ? meterColors[r] : ghost;
+          ctx.fillRect(x, bottom - (r + 1) * rh - r * 2, cw, rh);
+        }
+        if (cap > .04) {   // the floating peak cap: a thin bar just above where the bar reached
+          const capRow = Math.min(rows - 1, Math.max(litn, Math.ceil(cap * rows) - 1));
+          const yTop = bottom - (capRow + 1) * rh - capRow * 2;
+          ctx.fillStyle = capColor;
+          ctx.fillRect(x, yTop + (capRow < litn ? 0 : rh * .55), cw, rh * .45);
         }
       }
+      this.peaks = this.caps.map(c => c.v);
     }
     // Glass.
     const shade = ctx.createLinearGradient(0, Sy, 0, Sy + 10);

@@ -351,11 +351,11 @@ export const MARKERS = { black: ['Black', '#1d1b22'], blue: ['Blue', '#2347b5'],
   purple: ['Purple', '#6a2fb5'], green: ['Green', '#1f7a4a'], silver: ['Silver', '#ecebf3'],
   pink: ['Pink', '#e8458f'], orange: ['Orange', '#f07d1a'], teal: ['Teal', '#109e9a'], sky: ['Sky blue', '#3b97e6'],
   lime: ['Lime', '#5fb52a'], rainbow: ['Rainbow', 'rainbow'] };
-// Rainbow gel pen: each letter (and each doodle) a different colour.
+// Rainbow gel pen: each letter (and each doodle) a different color.
 export const RAINBOW = ['#e8458f', '#f07d1a', '#e0a800', '#4cb944', '#3b97e6', '#8a5cf0'];
 export const FUN_INKS = ['pink', 'orange', 'teal', 'sky', 'lime', 'purple', 'rainbow'];
 const inkAt = (color, i) => (color === 'rainbow' ? RAINBOW[((i % RAINBOW.length) + RAINBOW.length) % RAINBOW.length] : color);
-// A plain colour to stand for an ink (rainbow → its first colour).
+// A plain color to stand for an ink (rainbow → its first color).
 export const solidInk = color => (color === 'rainbow' ? RAINBOW[0] : color);
 const MARKER_FONT = '"Marker Felt","Chalkboard SE","Comic Neue","Comic Sans MS","Patrick Hand","Hiragino Maru Gothic ProN",cursive';
 const markerFont = px => `bold ${Math.max(4, px).toFixed(1)}px ${MARKER_FONT}`;
@@ -588,7 +588,7 @@ export function obiPalette(album, artist, palette) {
   return { seed, cols: [ink, second, third, fourth] };
 }
 
-// The obi's seed and four colours, after any edits from the obi editor.
+// The obi's seed and four colors, after any edits from the obi editor.
 export function obiEffective(album, artist, palette, custom) {
   const { seed, cols } = obiPalette(album, artist, palette);
   if (custom && Array.isArray(custom.colors) && custom.colors.length) {
@@ -993,7 +993,11 @@ export function paintSleeve(ctx, W, cdr, playing) {
   const H = W * 1.06, R = W * .43, cx = W / 2, cy = H * .54;
   ctx.save();
   ctx.fillStyle = 'rgba(20,10,40,.10)'; roundRect(ctx, 3, 4, W - 3, H - 3, W * .05); ctx.fill();
-  ctx.fillStyle = 'rgba(255,255,255,.38)'; ctx.strokeStyle = playing ? THEME.accent : 'rgba(120,110,150,.45)'; ctx.lineWidth = playing ? 2.2 : 1;
+  // The sleeve is tinted in the CD-R's case color (black makes a smoky sleeve).
+  const [, tray, edge, , alpha] = caseOf(cdr);
+  const clear = (cdr.case || 'black') === 'clear';
+  ctx.fillStyle = clear ? 'rgba(255,255,255,.38)' : rgba(tray, (cdr.case || 'black') === 'black' ? .62 : Math.min(.8, alpha * .85));
+  ctx.strokeStyle = playing ? THEME.accent : rgba(edge, .8); ctx.lineWidth = playing ? 2.2 : 1.2;
   roundRect(ctx, 1, 1, W - 4, H - 4, W * .05); ctx.fill(); ctx.stroke();
   ctx.save();
   ctx.translate(cx, cy);
