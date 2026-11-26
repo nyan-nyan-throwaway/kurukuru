@@ -1,0 +1,86 @@
+// Kurukuru CD (web): everything lives in IndexedDB on the phone.
+//   tracks  : song details (no audio)        key: id
+//   audio   : the song files themselves      key: track id
+//   images  : covers, backs, discs, booklets key: id
+//   albums  : album details + which images   key: album key
+//   extras  : level meters, settings blobs   key: string
+const DB_NAME = 'kurukuru-cd';
+const DB_VERSION = 1;
+let dbPromise = null;
+
+export function openDB() {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      for (const name of ['tracks', 'audio', 'images', 'albums', 'extras']) {
+        if (!db.objectStoreNames.contains(name)) db.createObjectStore(name);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return dbPromise;
+}
+
+function done(tx) {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Storage transaction aborted'));
+  });
+}
+
+export async function put(store, key, value) {
+  const db = await openDB();
+  const tx = db.transaction(store, 'readwrite');
+  tx.objectStore(store).put(value, key);
+  return done(tx);
+}
+
+export async function get(store, key) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(store).objectStore(store).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function del(store, key) {
+  const db = await openDB();
+  const tx = db.transaction(store, 'readwrite');
+  tx.objectStore(store).delete(key);
+  return done(tx);
+}
+
+export async function all(store) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const out = [];
+    const req = db.transaction(store).objectStore(store).openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (cursor) { out.push([cursor.key, cursor.value]); cursor.continue(); } else resolve(out);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export function uid() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+export async function storageInfo() {
+  const est = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate() : {};
+  const persisted = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : false;
+  return { usage: est.usage || 0, quota: est.quota || 0, persisted };
+}
+
+export async function askPersist() {
+  try {
+    if (navigator.storage && navigator.storage.persist) return await navigator.storage.persist();
+  } catch (e) { /* not supported */ }
+  return false;
+}
