@@ -75,7 +75,58 @@ const motor = rising => (t, u, s, rate) => {
   return (Math.sin(s.phase) + .45 * Math.sin(2 * s.phase) + .2 * Math.sin(3 * s.phase) + s.noise() * .12) * env;
 };
 
-const LEVELS = { press: 1, skip: .8, lid: 1, start: .55, stop: .55 };
+const LEVELS = { press: 1, skip: .8, lid: 1, start: .55, stop: .55,
+  case: .9, flip: .8, page: .8, scrub: .45, marker: .5, burn: .55, burned: .7, end: .6 };
+
+// The newer sounds (the desktop app makes the same ones, from the same recipes).
+const TAU = 2 * Math.PI;
+const SOUND_RECIPES = {
+  // a jewel case snapping open: two plastic clicks and a little hollow ring
+  case: [.2, (t, u, s) => tick(t, s, 3200) * .9 + tick(t - .06, s, 2500) * .7 + Math.sin(TAU * 420 * t) * Math.exp(-t / .025) * .35
+                         + (t > .06 ? Math.sin(TAU * 300 * (t - .06)) * Math.exp(-(t - .06) / .03) * .3 : 0)],
+  // turning the case over: a soft plastic clack
+  flip: [.12, (t, u, s) => Math.sin(TAU * 230 * t) * Math.exp(-t / .03) * .8 + tick(t, s, 1800) * .6 + Math.sin(TAU * 520 * t) * Math.exp(-t / .012) * .25],
+  // a booklet page: a swipe of papery noise with a few crinkles
+  page: [.32, (t, u, s) => {
+    const n = s.noise();
+    s.lp += .5 * (n - s.lp);
+    s.b = (s.b || 0) + .3 * ((n - s.lp) - (s.b || 0));
+    const env = Math.min(1, t / .04) * Math.exp(-Math.max(0, t - .04) / .11);
+    return (s.b * 2.4 + (Math.abs(n) > .993 ? n * .5 : 0)) * env;
+  }],
+  // scrubbing: the laser's quick electronic pip
+  scrub: [.05, (t, u, s, rate) => {
+    s.phase += TAU * (2300 + 600 * u) / rate;
+    return (Math.sin(s.phase) + .3 * Math.sin(3 * s.phase)) * Math.exp(-t / .02) * (1 - u);
+  }],
+  // a felt-tip marker squeaking on plastic
+  marker: [.24, (t, u, s, rate) => {
+    s.phase += TAU * (1100 + 250 * Math.sin(TAU * 7 * t) + 60 * s.noise()) / rate;
+    s.lp += .4 * (s.noise() - s.lp);
+    return (Math.sin(s.phase) * .55 + s.lp * .5) * Math.sin(Math.PI * u) ** .6 * (.7 + .3 * Math.sin(TAU * 23 * t));
+  }],
+  // a CD burner spinning up, with the laser seeking as it writes
+  burn: [1.1, (t, u, s, rate) => {
+    s.phase += TAU * (160 + 380 * Math.min(1, u * 2.2)) / rate;
+    s.lp += .2 * (s.noise() - s.lp);
+    const env = Math.min(1, u * 8) * (u > .85 ? 1 - (u - .85) / .15 : 1);
+    const seek = u > .35 ? tick(t % .14, s, 2100) * .25 : 0;
+    return (Math.sin(s.phase) + .35 * Math.sin(2 * s.phase) + s.lp * .6) * env * .8 + seek;
+  }],
+  // ...and the "done!" chime
+  burned: [.75, (t) => {
+    const note = (f, at) => (t < at ? 0 : (Math.sin(TAU * f * (t - at)) + .25 * Math.sin(TAU * 2 * f * (t - at))) * Math.exp(-(t - at) / .25));
+    return note(1318.5, 0) * .8 + note(1975.5, .12);
+  }],
+  // the end of a disc: the motor winding down, then the pickup settling with a click
+  end: [1.2, (t, u, s, rate) => {
+    if (u < .85) {
+      s.phase += TAU * (30 + 260 * (1 - u / .85) ** .9) / rate;
+      return (Math.sin(s.phase) + .45 * Math.sin(2 * s.phase) + s.noise() * .1) * (1 - u / .85) ** 1.4;
+    }
+    return tick(t - 1.2 * .85, s, 1600) * .8;
+  }],
+};
 
 export function unlockSounds() {
   if (audioCtx) { if (audioCtx.state === 'suspended') audioCtx.resume(); return; }
@@ -87,6 +138,16 @@ export function unlockSounds() {
   render('lid', .15, (t, u, s) => Math.sin(2 * Math.PI * 95 * t) * Math.exp(-t / .035) * .9 + tick(t, s, 1500) + tick(t - .055, s, 2600) * .45);
   render('start', .45, motor(true));
   render('stop', .4, motor(false));
+  for (const [name, [duration, make]] of Object.entries(SOUND_RECIPES)) render(name, duration, make);
+}
+
+// For sounds that would repeat very fast (scrubbing, writing): at most one every `gap` ms.
+const lastPlayed = {};
+export function playSoundEvery(name, gap) {
+  const now = performance.now();
+  if (now - (lastPlayed[name] || 0) < gap) return;
+  lastPlayed[name] = now;
+  playSound(name);
 }
 
 export function playSound(name) {

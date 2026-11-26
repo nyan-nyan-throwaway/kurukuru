@@ -76,23 +76,41 @@ export async function findServer() {
       .sort((a, b) => rank(a) - rank(b));
     const token = s.accessToken || cfg.token;
     // Try them all at once and take the best one that answers.
-    const tries = conns.map(c => request(`${c.uri}/identity`, { token, timeout: 6000 }).then(() => c).catch(() => null));
+    const tries = conns.map(c => request(`${c.uri}/identity`, { token, timeout: c.relay ? 12000 : 7000 }).then(() => c).catch(() => null));
     const ok = (await Promise.all(tries)).filter(Boolean).sort((a, b) => rank(a) - rank(b));
     if (ok.length) {
       cfg.server = { name: s.name, id: s.clientIdentifier, uri: ok[0].uri, token, local: !!ok[0].local, relay: !!ok[0].relay,
                      all: conns.map(c => c.uri) };
       save();
+      checkedAt = Date.now();
       return cfg.server;
     }
   }
-  throw new Error('Found your Plex server but couldn’t reach it. Is the computer on, and is the phone on the same Wi-Fi?');
+  throw new Error('Found your Plex server but couldn’t reach it, at home or through Plex’s relay. Is the computer awake and Plex running?');
 }
 const rank = c => (c.relay ? 2 : c.local ? 0 : 1);
 
 // Call before a sync / when a request fails: re-checks the connection (e.g. you left home).
 export async function reconnect() {
-  try { await request(`${cfg.server.uri}/identity`, { token: cfg.server.token, timeout: 4000 }); return cfg.server; }
-  catch (e) { return findServer(); }
+  try {
+    await request(`${cfg.server.uri}/identity`, { token: cfg.server.token, timeout: 4000 });
+    // at home on the relay? switch back to the direct route when there is one
+    if (cfg.server.relay || !cfg.server.local) return await findServer().catch(() => cfg.server);
+    checkedAt = Date.now();
+    return cfg.server;
+  } catch (e) { return findServer(); }
+}
+
+// The route to the server changes when you leave (or come home to) your Wi-Fi.
+// Re-checked when the app opens or comes back, when the network changes, and every
+// couple of minutes before anything talks to Plex.
+let checkedAt = 0, checking = null;
+export function serverStale() { checkedAt = 0; }
+export async function ensureServer(maxAge = 120000) {
+  if (!cfg.token || !cfg.server) return null;
+  if (Date.now() - checkedAt < maxAge) return cfg.server;
+  if (!checking) checking = reconnect().finally(() => { checking = null; });
+  return checking;
 }
 
 // ---------------------------------------------------------------- library
@@ -167,6 +185,7 @@ export function albumFolder(file) {
 }
 
 export async function fetchArt(thumb, size = 600) {
+  await ensureServer().catch(() => {});
   const url = srv('/photo/:/transcode', { width: size, height: size, minSize: 1, upscale: 1, url: thumb });
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 20000);
@@ -180,6 +199,7 @@ export async function fetchArt(thumb, size = 600) {
 // Lyrics Plex found for a song (sidecar .lrc/.txt or embedded), as text, or null.
 export async function fetchLyrics(track) {
   try {
+    await ensureServer();
     const meta = await request(srv(`/library/metadata/${track.plexKey}`, { includeLyrics: 1 }));
     const item = (meta.MediaContainer.Metadata || [])[0];
     const streams = (((item && item.Media || [])[0] || {}).Part || []).flatMap(p => p.Stream || []);
@@ -204,6 +224,7 @@ const lrcTime = ms => `[${String(Math.floor(ms / 60000)).padStart(2, '0')}:${(ms
 
 // The whole song file (for keeping it on the phone, or measuring loudness for the level meter).
 export async function fetchSong(track, onProgress) {
+  await ensureServer();
   const res = await fetch(streamUrl(track));
   if (!res.ok) throw new Error(`Couldn’t download “${track.title}” (${res.status})`);
   if (!res.body || !onProgress) return res.blob();

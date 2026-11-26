@@ -1,4 +1,8 @@
 // Kurukuru CD for iPhone: the app.
+import { STICKERS, stickersOf } from './stickers.js';
+import { SHELLS, applyShell, shellPalette, shellTheme } from './shells.js';
+import { MIX_KINDS, MIX_LENGTHS, makeMix, mixLook } from './mixer.js';
+import { toHsv } from './theme.js';
 import { THEME, setTheme, albumScheme, autoThemeName, SCHEME_KEYS, albumPalette, mix, rgba, hex, parse, smooth, crc32, darker } from './theme.js';
 import { Sky, paintCaseFront, paintCaseBack, paintCaseBackImage, paintSpine, fmtTime, paintSlimCase, paintCdrBack, paintCdrSpine,
          renderDiscFace, CDR_DYES, MARKERS, OBI_DESIGNS, obiEffective, DOODLES, CASES, drawDoodle, doodlesOf, paintSleeve, paintBlankSleeve, RAINBOW, FUN_INKS, solidInk } from './paint.js';
@@ -6,21 +10,21 @@ import { DiscView } from './disc.js';
 import { LcdView } from './lcd.js';
 import { lib, loadLibrary, importFiles, albumTracks, sortedAlbums, imageFor, imageBlob, audioBlob, deleteAlbum, cachedLevels, saveLevels,
          applyPlexLibrary, forgetPlex, keepAlbum, unkeepAlbum, saveTrack, art, bookletPages, setAlbumArt, resetAlbumArt, setObi,
-         setTrackLyrics, decodeText, obiFor as albumObi, discOf, discCount, discArt, saveCdrs, saveTombstones, findCdr, cdrTracks, cdrMinutes, newCdr, updateCdr, burnTo, deleteCdr, CDR_MINUTES } from './library.js';
+         setTrackLyrics, decodeText, countPlay, addListening, playsOf, lastPlayedOf, albumPlays, albumLastPlayed, saveStats, obiFor as albumObi, discOf, discCount, discArt, saveCdrs, saveTombstones, findCdr, cdrTracks, cdrMinutes, newCdr, updateCdr, burnTo, setStickers, deleteCdr, CDR_MINUTES } from './library.js';
 import { makeBackup, restoreBackup } from './backup.js';
 import { syncCdrs } from './cdrsync.js';
 import { syncArt } from './artsync.js';
 import * as plexApi from './plex.js';
 const { plex } = plexApi;
-import { lyricsFor, unlockSounds, playSound, sounds, analyzeSpectrum } from './audiofx.js';
+import { lyricsFor, unlockSounds, playSound, playSoundEvery, sounds, analyzeSpectrum } from './audiofx.js';
 import { storageInfo, askPersist } from './db.js';
 
-const VERSION = '1.7';
+const VERSION = '1.9';
 const $ = id => document.getElementById(id);
 
 // ---------------------------------------------------------------- settings
 
-const DEFAULTS = { theme: 'Auto', disc: 'design', obi: true, sky: true, meter: true, lyrics: true, sounds: true, fx: 70, shelf: 'cases', shelfTab: 'albums', volume: 1 };
+const DEFAULTS = { theme: 'Auto', disc: 'design', obi: true, sky: true, meter: true, lyrics: true, sounds: true, fx: 70, shelf: 'cases', shelfTab: 'albums', volume: 1, shell: 'auto' };
 const settings = { ...DEFAULTS };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('kurukuru-settings') || '{}')); } catch (e) { /* private mode */ }
 const saveSettings = () => { try { localStorage.setItem('kurukuru-settings', JSON.stringify(settings)); } catch (e) { /* ignore */ } };
@@ -81,8 +85,10 @@ function setVars() {
 }
 
 function applyTheme() {
-  setTheme(settings.theme === 'Auto' ? autoThemeName() : settings.theme);
-  Object.assign(THEME, albumScheme(scheme.source[0], scheme.source[1], THEME.name === 'Night'));
+  setTheme(shellTheme(settings.shell, settings.theme === 'Auto' ? autoThemeName() : settings.theme));
+  applyShell(THEME, settings.shell);
+  const shellCols = shellPalette(settings.shell);
+  Object.assign(THEME, albumScheme(shellCols || scheme.source[0], shellCols ? 1 : scheme.source[1], THEME.name === 'Night'));
   scheme.t = 1;
   setVars();
   disc.refresh();
@@ -107,7 +113,8 @@ async function schemeFor(track, cdr) {
   }
   scheme.source = [palette, seed];
   scheme.from = Object.fromEntries(SCHEME_KEYS.map(k => [k, THEME[k]]));
-  scheme.to = albumScheme(palette, seed, THEME.name === 'Night');
+  const shellCols = shellPalette(settings.shell);
+  scheme.to = albumScheme(shellCols || palette, shellCols ? 1 : seed, THEME.name === 'Night');
   scheme.t = 0;
 }
 
@@ -149,11 +156,59 @@ async function refreshDisc(animate) {
   return cover;
 }
 
-async function playTrack(id, { autoplay = true, animate = true, cdr = null } = {}) {
+// Near-gapless: the next song on the same disc is read (or its stream lined up) a few seconds
+// before this one ends, so it can start the moment this one finishes. (iPhone web apps can't
+// fade the volume, so there's no crossfade here; the desktop app has one.)
+let prepared = null;   // { id, url, blob }
+function upcomingId() {
+  if (!current || state.repeat || state.shuffle) return null;
+  const q = queue(), i = q.indexOf(current.id);
+  if (i < 0 || i === q.length - 1) return null;
+  const next = lib.tracks.get(q[i + 1]);
+  if (!next) return null;
+  if (!playingCdr && (next.albumKey !== current.albumKey || discOf(next) !== discOf(current))) return null;
+  return next.id;
+}
+async function prepareNext() {
+  const id = upcomingId();
+  if (!id || (prepared && prepared.id === id)) return;
+  const t = lib.tracks.get(id);
+  dropPrepared();
+  prepared = { id, url: null, blob: null };
+  const mine = prepared;
+  if (t.source === 'plex' && !t.local) {
+    if (!plex.connected) return;
+    try { await plexApi.ensureServer(); } catch { return; }
+    if (prepared === mine) mine.url = plexApi.streamUrl(t);
+  }
+  else {
+    const blob = await audioBlob(id);
+    if (prepared !== mine || !blob) return;
+    mine.blob = blob; mine.url = URL.createObjectURL(blob);
+  }
+}
+function dropPrepared() {
+  if (prepared && prepared.blob && prepared.url && prepared.url !== audioUrl) URL.revokeObjectURL(prepared.url);
+  prepared = null;
+}
+
+async function playTrack(id, { autoplay = true, animate = true, cdr = null, gapless = false } = {}) {
   const track = lib.tracks.get(id);
   if (!track) return;
-  if (current && current.id !== id) playSound('skip');
+  // the next song was lined up: start it straight away, before the screen catches up
+  const early = gapless && prepared && prepared.id === id && prepared.url ? prepared : null;
+  if (early) {
+    if (audioUrl && audioUrl !== early.url) URL.revokeObjectURL(audioUrl);
+    audioUrl = early.blob ? early.url : null;
+    audio.src = early.url;
+    if (autoplay) audio.play().catch(() => {});
+    prepared = null;
+  } else {
+    dropPrepared();
+    if (current && current.id !== id) playSound('skip');
+  }
   current = track;
+  heardFor = null;
   const disc_ = cdr && findCdr(cdr);
   playingCdr = disc_ ? disc_.id : null;
   const album = lib.albums.get(track.albumKey);
@@ -168,14 +223,20 @@ async function playTrack(id, { autoplay = true, animate = true, cdr = null } = {
   state.title = track.title;
   state.subtitle = [track.artist, track.album, disc_ ? '' : track.year].filter(Boolean).join('  ·  ');
   state.lyrics = lyricsFor(track.lyrics, track.duration);
+  karaokeLine = -2;
   state.levels = null;
   state.spectrum = null;
   const cover = await refreshDisc(animate);
   const streamed = track.source === 'plex' && !track.local;
-  const blob = streamed ? null : await audioBlob(id);
-  if (audioUrl) { URL.revokeObjectURL(audioUrl); audioUrl = null; }
-  if (streamed) {
+  const blob = early ? early.blob : streamed ? null : await audioBlob(id);
+  if (early) retried = false;
+  else if (audioUrl) { URL.revokeObjectURL(audioUrl); audioUrl = null; }
+  if (early) { /* already playing */ }
+  else if (streamed) {
     if (!plex.connected) { toast('Connect to Plex in Settings to play this.'); return; }
+    try { await plexApi.ensureServer(); }
+    catch (e) { toast(e.message, 8); return; }
+    if (current !== track) return;
     audio.src = plexApi.streamUrl(track);
     retried = false;
   } else {
@@ -190,11 +251,11 @@ async function playTrack(id, { autoplay = true, animate = true, cdr = null } = {
       if (current === track) state.lyrics = lyricsFor(track.lyrics, track.duration);
     });
   }
-  if (autoplay) audio.play().catch(() => {});
+  if (autoplay && !early) audio.play().catch(() => {});
   renderNow();
   markPlaying();
   updateMediaSession(track, disc_ ? cdrArtwork(disc_) : cover);
-  try { localStorage.setItem('kurukuru-last', JSON.stringify({ id, cdr: playingCdr })); } catch (e) { /* ignore */ }
+  rememberSpot(0);
   // The visualizer (and the glow) need the song measured: cached, or worked out in the background once.
   const cached = await cachedLevels(id);
   const fresh = cached && cached.v === 2;
@@ -214,6 +275,15 @@ async function playTrack(id, { autoplay = true, animate = true, cdr = null } = {
   }, 1500);
 }
 
+// Resume: where you were (song, CD-R, and the spot in the song), kept as you listen.
+function rememberSpot(t = audio.currentTime) {
+  if (!current) return;
+  try { localStorage.setItem('kurukuru-last', JSON.stringify({ id: current.id, cdr: playingCdr, t: Math.floor(t || 0) })); } catch (e) { /* ignore */ }
+}
+setInterval(() => { if (current && !audio.paused) rememberSpot(); }, 5000);
+document.addEventListener('visibilitychange', () => { if (document.hidden) rememberSpot(); });
+window.addEventListener('pagehide', () => rememberSpot());
+
 function togglePlay() {
   unlockSounds();
   if (!current) {
@@ -230,7 +300,7 @@ function queue() {
   return cdr ? cdrTracks(cdr).map(t => t.id) : order;
 }
 
-function step(dir) {
+function step(dir, gapless = false) {
   const q = queue();
   if (!q.length) return;
   if (dir < 0 && audio.currentTime > 3) { audio.currentTime = 0; return; }
@@ -240,7 +310,7 @@ function step(dir) {
     playTrack(id, ctx); return;
   }
   const i = current ? q.indexOf(current.id) : -1;
-  playTrack(q[(i + dir + q.length) % q.length], ctx);
+  playTrack(q[(i + dir + q.length) % q.length], { ...ctx, gapless });
 }
 
 function cdrArtwork(cdr) {
@@ -259,14 +329,48 @@ audio.addEventListener('play', () => {
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
 });
 audio.addEventListener('pause', () => {
+  rememberSpot();
   if (current) state.state = 'pause';
   disc.spinning = false; playSound('stop');
   document.body.classList.remove('playing'); $('led').classList.remove('on');
   setPlayIcons(false);
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
 });
+// Play counts: a play counts once you've heard half the song (or 4 minutes of a long one).
+let heard = 0, heardFor = null, counted = false, lastTime = null;
+audio.addEventListener('timeupdate', () => {
+  if (!current) return;
+  if (audio.duration - audio.currentTime < 12 && !audio.paused) prepareNext();
+  if (heardFor !== current.id) { heardFor = current.id; heard = 0; counted = false; lastTime = audio.currentTime; }
+  const d = audio.currentTime - (lastTime ?? audio.currentTime);
+  lastTime = audio.currentTime;
+  if (audio.paused || !(d > 0 && d < 2)) return;   // only time actually listened (not jumps)
+  heard += d;
+  addListening(d * 1000);
+  const need = Math.min(240, (isFinite(audio.duration) ? audio.duration : current.duration || 60) * .5);
+  if (!counted && heard >= need) { counted = true; countPlay(current.id, playingCdr); }
+});
+
 audio.addEventListener('ended', () => {
-  if (state.repeat) { audio.currentTime = 0; audio.play(); } else step(1);
+  heardFor = null;
+  if (state.repeat) { audio.currentTime = 0; audio.play(); return; }
+  const q = queue(), i = current ? q.indexOf(current.id) : -1;
+  const next = q[(i + 1) % Math.max(1, q.length)] && lib.tracks.get(q[(i + 1) % q.length]);
+  const cdr = playingCdr && findCdr(playingCdr);
+  // A CD-R ends like a real disc: the motor winds down and it waits at song 1.
+  if (cdr && i === q.length - 1 && !state.shuffle) {
+    playSound('end');
+    playTrack(q[0], { autoplay: false, animate: false, cdr: cdr.id });
+    return;
+  }
+  const discEnds = !cdr && next && current && (next.albumKey !== current.albumKey || discOf(next) !== discOf(current));
+  if (discEnds && !state.shuffle && !document.hidden) {   // between discs: wind down, then the next one goes in
+    playSound('end');
+    const was = current;
+    setTimeout(() => { if (current === was && audio.ended) step(1); }, 1100);
+    return;
+  }
+  step(1, true);
 });
 audio.addEventListener('loadedmetadata', () => {
   if (isFinite(audio.duration)) state.duration = audio.duration * 1000;
@@ -332,7 +436,7 @@ const bar = $('bar');
 let dragging = false;
 function barFrac(e) { const r = bar.getBoundingClientRect(); return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)); }
 bar.addEventListener('pointerdown', e => { if (!current) return; dragging = true; bar.setPointerCapture(e.pointerId); showBar(barFrac(e)); });
-bar.addEventListener('pointermove', e => { if (dragging) showBar(barFrac(e)); });
+bar.addEventListener('pointermove', e => { if (dragging) { showBar(barFrac(e)); playSoundEvery('scrub', 90); } });
 bar.addEventListener('pointerup', e => {
   if (!dragging) return; dragging = false;
   if (isFinite(audio.duration)) { audio.currentTime = barFrac(e) * audio.duration; updatePositionState(); }
@@ -465,7 +569,7 @@ function sizeCase(canvas) {
 async function drawCase(canvas, album) {
   const [{ img, palette }, obi] = await Promise.all([albumArt(album), obiOf(album)]);
   const ctx = sizeCase(canvas);
-  paintCaseFront(ctx, { album: album.album, artist: album.artist, year: album.year, obi, discs: discCount(album) }, img, palette, THEME.name === 'Night', settings.obi);
+  paintCaseFront(ctx, { album: album.album, artist: album.artist, year: album.year, obi, discs: discCount(album), stickers: stickersOf(album) }, img, palette, THEME.name === 'Night', settings.obi);
 }
 
 const cdrLook = cdr => ({ ...cdr, fraction: cdrMinutes(cdr) / CDR_MINUTES });
@@ -497,11 +601,13 @@ const lazy = new IntersectionObserver(entries => {
 function renderShelf() {
   const shelf = $('shelf');
   const q = $('search').value.trim().toLowerCase();
-  const tab = settings.shelfTab === 'cdrs' ? 'cdrs' : 'albums';
-  for (const [id, on] of [['shelfAlbums', tab === 'albums'], ['shelfCdrs', tab === 'cdrs']]) {
+  const tab = ['cdrs', 'stats'].includes(settings.shelfTab) ? settings.shelfTab : 'albums';
+  for (const [id, on] of [['shelfAlbums', tab === 'albums'], ['shelfCdrs', tab === 'cdrs'], ['shelfStats', tab === 'stats']]) {
     $(id).classList.toggle('lit', on); $(id).querySelector('.lamp').classList.toggle('lit', on);
   }
   $('newCdr').hidden = tab !== 'cdrs';
+  document.querySelector('.shelf-tools').hidden = tab === 'stats';
+  if (tab === 'stats') { renderStats(shelf); return; }
   $('search').placeholder = tab === 'cdrs' ? 'Search CD-Rs' : 'Search albums';
   const items = tab === 'cdrs'
     ? lib.cdrs.filter(c => !q || `${c.title}\n${cdrTracks(c).map(t => t.title + ' ' + t.artist).join(' ')}`.toLowerCase().includes(q))
@@ -518,6 +624,24 @@ function renderShelf() {
     return;
   }
   const key = playingKey();
+  if (tab === 'albums' && !q && !spines) {   // a row of what you've played lately
+    const recent = sortedAlbums().filter(a => albumLastPlayed(a) > 0).sort((a, b) => albumLastPlayed(b) - albumLastPlayed(a)).slice(0, 10);
+    if (recent.length) {
+      const box = document.createElement('div');
+      box.className = 'recent';
+      box.innerHTML = '<p class="silk">RECENTLY PLAYED</p><div class="recent-row"></div>';
+      for (const a of recent) {
+        const el = document.createElement('div');
+        el.className = 'card'; el.dataset.key = a.key;
+        el.classList.toggle('playing', a.key === key);
+        el.innerHTML = `<canvas></canvas><b>${esc(a.album)}</b>`;
+        el.redraw = () => drawCase(el.firstChild, a);
+        el.addEventListener('click', () => { playSound('case'); openAlbum(a.key); });
+        box.lastChild.appendChild(el); lazy.observe(el);
+      }
+      shelf.appendChild(box);
+    }
+  }
   if (wallet && !q) {   // the first pocket: a blank disc
     const el = document.createElement('div');
     el.className = 'sleeve blank';
@@ -553,7 +677,7 @@ function renderShelf() {
       el.redraw = () => drawCase(el.firstChild, album);
       shelf.appendChild(el);
     }
-    el.addEventListener('click', () => { playSound('press'); if (cdr) openCdr(cdr.id); else openAlbum(album.key); });
+    el.addEventListener('click', () => { playSound('case'); if (cdr) openCdr(cdr.id); else openAlbum(album.key); });
     lazy.observe(el);
   });
 }
@@ -690,7 +814,7 @@ async function showBookletPage(dir) {
   const target = page + dir;
   if (target < 0 || target >= pages.length) return;
   const img = $('bookletPage');
-  if (dir) { playSound('press'); img.classList.add('fold'); await new Promise(r => setTimeout(r, 190)); }
+  if (dir) { playSound('page'); img.classList.add('fold'); await new Promise(r => setTimeout(r, 190)); }
   page = target;
   const blob = await imageBlob(pages[page][1]);
   if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
@@ -792,7 +916,7 @@ function plexUi() {
 }
 
 async function syncPlex(quiet) {
-  const run = async p => { const r = await applyPlexLibrary(await plexApi.fetchLibrary(p)); rebuildOrder(); renderNow(); if (!$('page-library').hidden) renderShelf(); return r; };
+  const run = async p => { await plexApi.ensureServer();  const r = await applyPlexLibrary(await plexApi.fetchLibrary(p)); rebuildOrder(); renderNow(); if (!$('page-library').hidden) renderShelf(); return r; };
   if (quiet) {
     try { await run(() => {}); } catch (e) { console.warn('Plex sync later:', e.message); }
   } else {
@@ -809,6 +933,7 @@ async function runArtSync() {
   if (artSyncBusy || !plex.connected) return;
   artSyncBusy = true;
   try {
+    await plexApi.ensureServer();
     const r = await syncArt();
     artSyncAt = Date.now();
     artNote = r.noLibrary ? 'To get booklets and obi designs from the PC, add a Photos library in Plex over your Music folder (see the README).'
@@ -838,6 +963,7 @@ function scheduleCdrSync(delay = 4000) {
 
 async function runCdrSync() {
   if (cdrSyncBusy || !plex.connected) return;
+  try { await plexApi.ensureServer(); } catch { return; }
   cdrSyncBusy = true;
   const rev = lib.cdrRev;
   const tombstones = [...lib.tombstones];
@@ -877,8 +1003,13 @@ async function runCdrSync() {
   }
 }
 setInterval(() => scheduleCdrSync(0), 3 * 60 * 1000);
+// Leaving home (or coming back) changes the way to reach the computer: look again.
+const networkChanged = () => { plexApi.serverStale(); if (plex.connected) plexApi.ensureServer().catch(() => {}); };
+window.addEventListener('online', networkChanged);
+if (navigator.connection) navigator.connection.addEventListener('change', networkChanged);
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;
+  networkChanged();
   scheduleCdrSync(1500);
   if (Date.now() - artSyncAt > 10 * 60 * 1000) setTimeout(runArtSync, 3000);
 });
@@ -912,7 +1043,7 @@ $('plexDisconnect').onclick = async () => {
 // ---------------------------------------------------------------- settings sheet
 
 async function openSettings() {
-  $('setTheme').value = settings.theme; $('setDisc').value = settings.disc; $('setObi').checked = settings.obi;
+  $('setShell').value = settings.shell; $('setTheme').value = settings.theme; $('setDisc').value = settings.disc; $('setObi').checked = settings.obi;
   $('setSky').checked = settings.sky; $('setMeter').checked = settings.meter; $('setLyrics').checked = settings.lyrics;
   $('setSounds').checked = settings.sounds; $('setFx').value = settings.fx;
   $('version').textContent = `Kurukuru CD for iPhone · version ${VERSION}`;
@@ -928,7 +1059,7 @@ async function openSettings() {
   $('settings').hidden = false;
 }
 function settingChanged() {
-  Object.assign(settings, { theme: $('setTheme').value, disc: $('setDisc').value, obi: $('setObi').checked, sky: $('setSky').checked,
+  Object.assign(settings, { shell: $('setShell').value, theme: $('setTheme').value, disc: $('setDisc').value, obi: $('setObi').checked, sky: $('setSky').checked,
     meter: $('setMeter').checked, lyrics: $('setLyrics').checked, sounds: $('setSounds').checked, fx: +$('setFx').value });
   saveSettings();
   state.showMeter = settings.meter; state.showLyrics = settings.lyrics;
@@ -937,7 +1068,7 @@ function settingChanged() {
   if (!(album && album.disc)) disc.setMode(settings.disc);
   applyTheme();
 }
-for (const id of ['setTheme', 'setDisc', 'setObi', 'setSky', 'setMeter', 'setLyrics', 'setSounds', 'setFx']) $(id).addEventListener('change', settingChanged);
+for (const id of ['setShell', 'setTheme', 'setDisc', 'setObi', 'setSky', 'setMeter', 'setLyrics', 'setSounds', 'setFx']) $(id).addEventListener('change', settingChanged);
 $('setFx').addEventListener('change', () => playSound('press'));
 $('persistButton').onclick = async () => { const ok = await askPersist(); toast(ok ? 'Your music is marked to be kept.' : 'iPhone didn’t allow it yet. It usually does once the app is on your Home Screen.'); openSettings(); };
 $('openSettings').onclick = () => { playSound('press'); openSettings(); };
@@ -958,13 +1089,52 @@ hw('miniNext', () => step(1));
 hw('shuffle', () => { state.shuffle = !state.shuffle; $('shuffle').classList.toggle('lit', state.shuffle); $('shuffle').querySelector('.lamp').classList.toggle('lit', state.shuffle); });
 hw('repeat', () => { state.repeat = !state.repeat; $('repeat').classList.toggle('lit', state.repeat); $('repeat').querySelector('.lamp').classList.toggle('lit', state.repeat); });
 $('disc').addEventListener('click', openPicker);
+$('lcd').addEventListener('click', () => {
+  unlockSounds();
+  if (current && state.lyrics && state.lyrics.length) { playSound('press'); openKaraoke(); }
+  else if (current) flash('No lyrics for this song');
+});
+
+// ---------------------------------------------------------------- karaoke
+
+let karaokeLine = -2;
+function openKaraoke() {
+  karaokeLine = -2;
+  $('karaoke').hidden = false;
+  drawKaraoke();
+}
+function closeKaraoke() { $('karaoke').hidden = true; }
+$('kClose').onclick = () => { playSound('press'); closeKaraoke(); };
+$('kPlay').onclick = togglePlay;
+
+function drawKaraoke() {
+  if ($('karaoke').hidden || !current) return;
+  const lines = state.lyrics || [], ms = audio.currentTime * 1000;
+  let i = -1;
+  for (let k = 0; k < lines.length; k++) { if (lines[k][0] <= ms) i = k; else break; }
+  const text = k => (lines[k] && lines[k][1]) || '';
+  if (i !== karaokeLine) {
+    karaokeLine = i;
+    $('kTitle').textContent = current.title;
+    $('kSub').textContent = `${current.artist} · ${current.album}`;
+    $('kPrev').textContent = text(i - 1);
+    $('kNow').textContent = i < 0 ? '♪' : text(i) || '♪';
+    $('kNext').textContent = text(i + 1);
+    $('kNext2').textContent = text(i + 2);
+  }
+  // the current line fills in as it's sung
+  const start = i >= 0 ? lines[i][0] : 0, end = lines[i + 1] ? lines[i + 1][0] : start + 4000;
+  const k = Math.max(0, Math.min(1, (ms - start) / Math.max(400, Math.min(end - start, 8000) * .9)));
+  $('kNow').style.setProperty('--k', `${Math.round(k * 100)}%`);
+  $('kBar').style.width = `${(audio.currentTime / (audio.duration || 1)) * 100}%`;
+}
 $('addMusic').addEventListener('click', () => { playSound('press'); openPicker(); });
 document.querySelectorAll('.tab[data-page]').forEach(t => t.addEventListener('click', () => { unlockSounds(); playSound('press'); showPage(t.dataset.page); }));
 $('search').addEventListener('input', renderShelf);
 $('viewToggle').onclick = () => { playSound('press'); settings.shelf = settings.shelf === 'spines' ? 'cases' : 'spines'; saveSettings(); renderShelf(); };
 $('backToShelf').onclick = () => { playSound('press'); showPage('library'); };
-$('caseFlip').onclick = () => { playSound('press'); $('caseFlip').classList.toggle('flipped'); };
-$('flipCase').onclick = () => $('caseFlip').classList.toggle('flipped');
+$('caseFlip').onclick = () => { playSound('flip'); $('caseFlip').classList.toggle('flipped'); };
+$('flipCase').onclick = () => { playSound('flip'); $('caseFlip').classList.toggle('flipped'); };
 $('playAlbum').onclick = () => {
   unlockSounds();
   if (shownCdr) { const c = findCdr(shownCdr); const t = c && cdrTracks(c)[0]; if (t) playTrack(t.id, { cdr: c.id }); else toast('Nothing is burned on this CD-R yet.'); return; }
@@ -972,9 +1142,117 @@ $('playAlbum').onclick = () => {
 };
 $('openBooklet').onclick = openBooklet;
 $('cdrAdd').onclick = () => { playSound('press'); const c = findCdr(shownCdr); if (c) openSongPicker(c); };
-$('newCdr').onclick = () => { playSound('press'); openCdrEditor(null, null); };
+$('newCdr').onclick = () => {
+  playSound('press');
+  menu('NEW CD-R', [
+    { label: 'Burn me a mix…', note: 'Kurukuru picks the songs and decorates the disc', run: mixMenu },
+    { label: 'A blank CD-R', note: 'you pick the songs', run: () => openCdrEditor(null, null) },
+  ]);
+};
+
+// ---------------------------------------------------------------- burn me a mix
+
+function mixMenu() {
+  if (!lib.tracks.size) { toast('Add some music first!'); return; }
+  const seed = current ? lib.albums.get(current.albumKey) : null;
+  const kinds = Object.entries(MIX_KINDS).filter(([k]) => k !== 'like' || seed);
+  menu('BURN ME A MIX', kinds.map(([k, v]) => ({
+    label: k === 'like' ? `Like “${seed.album}”` : v.label, note: v.note,
+    run: () => menu('HOW LONG?', MIX_LENGTHS.map(([min, label, note]) => ({ label, note, run: () => burnMix(k, min, seed) }))),
+  })));
+}
+
+// Each album's main hue, from its cover (remembered, since covers can come from Plex).
+const HUES_KEY = 'kurukuru-hues';
+let hues = {};
+try { hues = JSON.parse(localStorage.getItem(HUES_KEY) || '{}'); } catch { hues = {}; }
+async function albumHue(album) {
+  const cover = art(album, 'cover');
+  const key = `${album.key}|${cover || ''}`;
+  if (key in hues) return hues[key];
+  let hue = -1;
+  try {
+    const { palette } = await albumArt(album);
+    for (const c of palette) {
+      const h = toHsv(c);
+      if (h.h >= 0 && h.s > 50) { hue = h.h; break; }
+    }
+  } catch { /* no cover */ }
+  hues[key] = hue;
+  try { localStorage.setItem(HUES_KEY, JSON.stringify(hues)); } catch { /* full */ }
+  return hue;
+}
+
+async function burnMix(kind, minutes, seedAlbum) {
+  const needHue = kind === 'warm' || kind === 'cool' || kind === 'like';
+  if (needHue) toast('Looking through your covers…', 2);
+  const albums = [...lib.albums.values()];
+  const hueBy = {};
+  if (needHue) await Promise.all(albums.map(async a => { hueBy[a.key] = await albumHue(a); }));
+  const tracks = [...lib.tracks.values()].map(t => ({
+    id: t.id, albumKey: t.albumKey, artist: t.artist, duration: t.duration || 0,
+    plays: playsOf(t.id), last: lastPlayedOf(t.id), hue: hueBy[t.albumKey] ?? -1,
+  }));
+  const seed = seedAlbum ? { key: seedAlbum.key, album: seedAlbum.album, artist: seedAlbum.artist, hue: hueBy[seedAlbum.key] ?? -1 } : null;
+  const songs = makeMix(kind, tracks, minutes, seed);
+  if (songs.length < 2) {
+    toast(kind === 'warm' || kind === 'cool' ? `Not enough albums with ${kind} covers for a mix yet.` : 'Not enough songs for that mix yet.', 4);
+    return;
+  }
+  const cdr = await newCdr(mixLook(kind, seedAlbum));
+  await burnTo(cdr, songs.map(t => t.id));
+  playSound('burn'); setTimeout(() => playSound('burned'), 1050);
+  const mins = Math.round(songs.reduce((m, t) => m + t.duration, 0) / 60);
+  toast(`Burned “${cdr.title}”: ${plural(songs.length, 'song')}, ${mins} min.`, 4);
+  cdrChanged(cdr);
+  setTimeout(() => openCdr(cdr.id), 400);
+}
 $('shelfAlbums').onclick = () => { playSound('press'); setShelfTab('albums'); };
 $('shelfCdrs').onclick = () => { playSound('press'); setShelfTab('cdrs'); };
+$('shelfStats').onclick = () => { playSound('press'); setShelfTab('stats'); };
+
+// ---------------------------------------------------------------- stats
+
+function renderStats(shelf) {
+  shelf.className = 'shelf stats';
+  const st = lib.stats;
+  const songs = Object.entries(st.tracks).filter(([id]) => lib.tracks.has(id));
+  const totalPlays = songs.reduce((n, [, v]) => n + v.plays, 0);
+  const hours = st.ms / 3600000;
+  const listened = hours >= 1 ? `${hours.toFixed(hours < 10 ? 1 : 0)} h` : `${Math.round(st.ms / 60000)} min`;
+  const since = new Date(st.since || Date.now());
+  const topAlbums = sortedAlbums().map(a => [a, albumPlays(a)]).filter(x => x[1]).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  const topSongs = songs.sort((a, b) => b[1].plays - a[1].plays).slice(0, 15);
+  const topCdrs = lib.cdrs.map(c => [c, (st.cdrs[c.id] || {}).plays || 0]).filter(x => x[1]).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const recent = Object.entries(st.tracks).filter(([id]) => lib.tracks.has(id)).sort((a, b) => b[1].last - a[1].last).slice(0, 10);
+  const ago = ms => { const m = Math.round((Date.now() - ms) / 60000); return m < 60 ? `${Math.max(1, m)} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`; };
+  const bar = (n, max) => `<div class="stat-bar" style="width:${Math.max(6, n / max * 100)}%"></div>`;
+  let html = `<div class="stat-totals"><div><b>${listened}</b><span>LISTENED</span></div><div><b>${totalPlays}</b><span>PLAYS</span></div>
+    <div><b>${songs.length}</b><span>SONGS HEARD</span></div></div>
+    <p class="dim small">Counting since ${since.toLocaleDateString()}. A play counts once you've heard half a song.</p>`;
+  if (!totalPlays) { shelf.innerHTML = html + '<p class="dim">Nothing played yet. Your favorites will show up here.</p>'; return; }
+  const section = (title, rows) => rows ? `<p class="silk">${title}</p><ol class="stat-list">${rows}</ol>` : '';
+  html += section('TOP ALBUMS', topAlbums.map(([a, n], i) => `<li data-album="${esc(a.key)}"><span class="rank">${i + 1}</span><canvas data-case="${esc(a.key)}"></canvas>
+      <span class="tt"><b>${esc(a.album)}</b><span>${esc(a.artist)}</span>${bar(n, topAlbums[0][1])}</span><span class="count">${n}×</span></li>`).join(''));
+  html += section('TOP SONGS', topSongs.map(([id, v], i) => { const t = lib.tracks.get(id); return `<li data-song="${id}"><span class="rank">${i + 1}</span>
+      <span class="tt"><b>${esc(t.title)}</b><span>${esc(t.artist)} · ${esc(t.album)}</span>${bar(v.plays, topSongs[0][1].plays)}</span><span class="count">${v.plays}×</span></li>`; }).join(''));
+  html += section('TOP CD-Rs', topCdrs.map(([c, n], i) => `<li data-cdr="${c.id}"><span class="rank">${i + 1}</span><canvas data-cdrcase="${c.id}"></canvas>
+      <span class="tt"><b>${esc(c.title)}</b><span>${plural(c.tracks.length, 'song')}</span>${bar(n, topCdrs[0][1])}</span><span class="count">${n}×</span></li>`).join(''));
+  html += section('RECENTLY PLAYED', recent.map(([id, v]) => { const t = lib.tracks.get(id); return `<li data-song="${id}"><span class="rank">♪</span>
+      <span class="tt"><b>${esc(t.title)}</b><span>${esc(t.artist)}</span></span><span class="count">${ago(v.last)}</span></li>`; }).join(''));
+  shelf.innerHTML = html;
+  shelf.querySelectorAll('canvas[data-case]').forEach(c => drawCase(c, lib.albums.get(c.dataset.case)));
+  shelf.querySelectorAll('canvas[data-cdrcase]').forEach(c => drawCdrCase(c, findCdr(c.dataset.cdrcase)));
+}
+
+$('shelf').addEventListener('click', e => {
+  const li = e.target.closest('.stat-list li');
+  if (!li) return;
+  unlockSounds();
+  if (li.dataset.album) { playSound('case'); openAlbum(li.dataset.album); }
+  else if (li.dataset.cdr) { playSound('case'); openCdr(li.dataset.cdr); }
+  else if (li.dataset.song) { playSound('press'); playTrack(li.dataset.song); }
+});
 $('albumMore').onclick = () => { playSound('press'); if (shownCdr) cdrMenu(findCdr(shownCdr)); else if (shownAlbum) albumMenu(lib.albums.get(shownAlbum)); };
 
 // ---------------------------------------------------------------- menus
@@ -1003,6 +1281,7 @@ function albumMenu(album) {
     { label: 'Burn this album to a CD-R…', run: () => chooseCdr(ids) },
     { label: 'Change pictures…', note: 'front, back, disc print, booklet pages', run: () => openArtSheet(album.key) },
     { label: 'Edit the obi strip…', run: () => openObiEditor(album.key) },
+    { label: 'Stickers…', note: stickersOf(album).length ? stickersOf(album).map(k => STICKERS[k]).join(', ') : 'NEW!, price tag, SALE and more', run: () => stickerMenu(album) },
   ];
   if (album.source === 'plex') {
     const kept = albumTracks(album).every(t => t.local);
@@ -1012,6 +1291,23 @@ function albumMenu(album) {
     items.push({ label: 'Remove album', danger: true, note: 'from Kurukuru only', run: () => removeAlbum(album) });
   }
   menu(album.album, items);
+}
+
+function stickerMenu(album) {
+  const on = stickersOf(album);
+  menu('STICKERS', [
+    ...Object.entries(STICKERS).map(([k, name]) => ({
+      label: `${on.includes(k) ? '✓ ' : ''}${name}`, note: on.includes(k) ? 'tap to peel it off' : '',
+      run: async () => {
+        const next = on.includes(k) ? on.filter(x => x !== k) : [...on, k];
+        playSound(on.includes(k) ? 'page' : 'case');
+        await setStickers(album.key, next);
+        repaintCases();
+        stickerMenu(album);
+      },
+    })),
+    ...(on.length ? [{ label: 'Peel them all off', run: async () => { playSound('page'); await setStickers(album.key, []); repaintCases(); } }] : []),
+  ]);
 }
 
 function cdrMenu(cdr) {
@@ -1076,7 +1372,7 @@ function chooseCdr(ids) {
 
 async function burn(cdr, ids) {
   const n = await burnTo(cdr, ids);
-  playSound('lid');
+  if (n) { playSound('burn'); setTimeout(() => playSound('burned'), 1050); } else playSound('press');
   const over = cdrMinutes(cdr) > CDR_MINUTES ? ' It’s now longer than a real 80-minute disc.' : '';
   toast(n ? `Burned ${plural(n, 'song')} to “${cdr.title}”.${ids.length > n ? ` (${ids.length - n} already on it.)` : ''}${over}`
           : `${ids.length === 1 ? 'That song is' : 'Those songs are'} already on “${cdr.title}”.`, over ? 6 : 3.5);
@@ -1146,7 +1442,7 @@ $('cdrDyes').addEventListener('click', e => { const b = e.target.closest('[data-
 $('cdrDoodles').addEventListener('click', e => {
   const b = e.target.closest('[data-doodle]');
   if (!b) return;
-  playSound('press');
+  playSound('marker');
   const n = b.dataset.doodle, list = cdrDraft.doodles.filter(x => x !== n);
   if (list.length === cdrDraft.doodles.length) { list.push(n); if (list.length > 4) list.shift(); }
   cdrDraft.doodles = list;
@@ -1161,8 +1457,8 @@ $('doodleRandom').onclick = () => {
 };
 $('doodleNone').onclick = () => { playSound('press'); cdrDraft.doodles = []; syncCdrEditor(); };
 $('cdrMarkers').addEventListener('click', e => { const b = e.target.closest('[data-marker]'); if (b) { playSound('press'); cdrDraft.marker = b.dataset.marker; syncCdrEditor(); } });
-$('cdrTitle').addEventListener('input', () => { cdrDraft.title = $('cdrTitle').value; syncCdrEditor(); });
-$('cdrDate').addEventListener('input', () => { cdrDraft.date = $('cdrDate').value; syncCdrEditor(); });
+$('cdrTitle').addEventListener('input', () => { cdrDraft.title = $('cdrTitle').value; playSoundEvery('marker', 160); syncCdrEditor(); });
+$('cdrDate').addEventListener('input', () => { cdrDraft.date = $('cdrDate').value; playSoundEvery('marker', 160); syncCdrEditor(); });
 $('cdrCancel').onclick = () => { $('cdrEditor').hidden = true; };
 $('cdrSave').onclick = async () => {
   playSound('press');
@@ -1362,7 +1658,7 @@ async function syncObi() {
   const c = $('obiPreview');
   const ctx = sizeCase(c);
   const obi = { design: obiDraft.design || undefined, colors: obiDraft.colors, label: obiDraft.label, catalogue: obiDraft.catalogue, imageObj: obiScanImg };
-  paintCaseFront(ctx, { album: album.album, artist: album.artist, year: album.year, obi, discs: discCount(album) }, img, palette, THEME.name === 'Night', true);
+  paintCaseFront(ctx, { album: album.album, artist: album.artist, year: album.year, obi, discs: discCount(album), stickers: stickersOf(album) }, img, palette, THEME.name === 'Night', true);
 }
 
 $('obiDesign').addEventListener('change', () => { obiDraft.design = $('obiDesign').value; syncObi(); });
@@ -1495,6 +1791,7 @@ function frame(now) {
   if (lcd.needsFrame() || frame.lcdDirty !== state.title + state.state + state.lidOpen + state.shuffle + state.repeat + state.trackCount + state.disc) {
     lcd.draw(); frame.lcdDirty = state.title + state.state + state.lidOpen + state.shuffle + state.repeat + state.trackCount + state.disc;
   }
+  drawKaraoke();
   if (!dragging && current) {
     const d = isFinite(audio.duration) ? audio.duration : (state.duration / 1000 || 0);
     showBar(d ? audio.currentTime / d : 0);
@@ -1523,14 +1820,21 @@ async function start() {
   // Pick up where you left off (paused).
   try {
     const lastPlayed = JSON.parse(localStorage.getItem('kurukuru-last') || 'null');
-    if (lastPlayed && lib.tracks.has(lastPlayed.id)) await playTrack(lastPlayed.id, { autoplay: false, animate: false, cdr: lastPlayed.cdr || null });
+    if (lastPlayed && lib.tracks.has(lastPlayed.id)) {
+      await playTrack(lastPlayed.id, { autoplay: false, animate: false, cdr: lastPlayed.cdr || null });
+      if (lastPlayed.t > 2) {   // back to the same spot in the song
+        const seek = () => { audio.currentTime = lastPlayed.t; showBar(lastPlayed.t / audio.duration); rememberSpot(lastPlayed.t); };
+        if (audio.readyState >= 1) seek(); else audio.addEventListener('loadedmetadata', seek, { once: true });
+        flash(`Resuming at ${fmtTime(lastPlayed.t * 1000)}`);
+      }
+    }
   } catch (e) { /* ignore */ }
   if (plex.connected) syncPlex(true);
-  setInterval(() => { if (settings.theme === 'Auto' && autoThemeName() !== THEME.name) applyTheme(); }, 60000);
+  setInterval(() => { if (settings.theme === 'Auto' && shellTheme(settings.shell, autoThemeName()) !== THEME.name) applyTheme(); }, 60000);
   setInterval(updatePositionState, 5000);
   requestAnimationFrame(frame);
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 document.addEventListener('visibilitychange', () => { last = performance.now(); });
-window.kurukuru = { lib, state, settings, plex: plexApi, makeBackup, updateCdr, newCdr, burnTo, syncCdrsNow: () => runCdrSync(), syncArtNow: () => runArtSync(), get artNote() { return artNote; }, get cdrSyncNote() { return cdrSyncNote; }, get playingCdr() { return playingCdr; } };   // handy for debugging in Web Inspector
+window.kurukuru = { lib, state, settings, audio, get current() { return current; }, get prepared() { return prepared; }, countPlay, plex: plexApi, makeBackup, updateCdr, newCdr, burnTo, syncCdrsNow: () => runCdrSync(), syncArtNow: () => runArtSync(), get artNote() { return artNote; }, get cdrSyncNote() { return cdrSyncNote; }, get playingCdr() { return playingCdr; } };   // handy for debugging in Web Inspector
 start();

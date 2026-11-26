@@ -16,7 +16,8 @@ export const DISC_DIR = /^(?:cd|disc|disk)\s*[-_.]?\s*(\d{1,2})\b/i;
 export const BOOKLET = /^(booklet|book|page|scan|inside|insert|liner|leaflet|lyrics)[\s_\-]*\d*/i;
 export const BOOKLET_DIRS = new Set(['scans', 'scan', 'booklet', 'artwork', 'art', 'covers', 'images']);
 
-export const lib = { tracks: new Map(), albums: new Map(), cdrs: [], pending: {}, tombstones: [], cdrRev: 0 };
+export const lib = { tracks: new Map(), albums: new Map(), cdrs: [], pending: {}, tombstones: [], cdrRev: 0,
+  stats: { tracks: {}, cdrs: {}, ms: 0, since: Date.now() } };
 
 const ext = name => (name.split('.').pop() || '').toLowerCase();
 const stem = name => name.split('/').pop().replace(/\.[^.]+$/, '');
@@ -30,6 +31,7 @@ export async function loadLibrary() {
   for (const c of lib.cdrs) if (!Array.isArray(c.doodles)) c.doodles = doodlesOf(c);   // fix each disc's doodles, so syncing keeps them
   lib.pending = (await db.get('extras', 'pending')) || {};
   lib.tombstones = (await db.get('extras', 'cdrTombstones')) || [];
+  lib.stats = (await db.get('extras', 'stats')) || lib.stats;
   // Tidy up songs left behind by an import that was interrupted.
   const owned = new Set([...lib.albums.values()].flatMap(a => a.trackIds));
   for (const id of [...lib.tracks.keys()]) {
@@ -376,6 +378,14 @@ export async function setObi(key, obi, scanFile) {
   await saveAlbum(album);
 }
 
+// Stickers on the jewel case; an empty list (not null) peels off ones that came from the PC.
+export async function setStickers(key, list) {
+  const album = lib.albums.get(key);
+  album.custom = album.custom || {};
+  album.custom.stickers = [...list];
+  await saveAlbum(album);
+}
+
 export async function setTrackLyrics(id, text) {
   const t = lib.tracks.get(id);
   t.lyrics = text;   // null lets a Plex song fetch Plex's own lyrics again
@@ -463,6 +473,7 @@ export async function relink() {
     const t = findByRef(ref);
     if (!t) continue;
     for (const c of lib.cdrs) c.tracks = c.tracks.map(id => { if (id === oldId) { cdrsTouched = true; return t.id; } return id; });
+    if (lib.stats.tracks[oldId] && !lib.stats.tracks[t.id]) { lib.stats.tracks[t.id] = lib.stats.tracks[oldId]; delete lib.stats.tracks[oldId]; saveStats(); }
     const text = lib.pending['lyrics:' + oldId];
     if (text != null) { t.lyrics = text; t.customLyrics = true; await db.put('tracks', t.id, t); delete lib.pending['lyrics:' + oldId]; }
     delete lib.pending[k];
@@ -487,3 +498,27 @@ export function discArt(album, n) {
 }
 
 export async function saveAlbums(albums) { await db.putMany('albums', albums.map(a => [a.key, a])); }
+
+// ---------------------------------------------------------------- play counts
+
+let statsTimer = null;
+export function saveStats(now = false) {
+  clearTimeout(statsTimer);
+  const write = () => db.put('extras', 'stats', lib.stats);
+  if (now) return write();
+  statsTimer = setTimeout(write, 2000);
+}
+export function countPlay(trackId, cdrId) {
+  const t = lib.stats.tracks[trackId] || (lib.stats.tracks[trackId] = { plays: 0, last: 0 });
+  t.plays++; t.last = Date.now();
+  if (cdrId) {
+    const c = lib.stats.cdrs[cdrId] || (lib.stats.cdrs[cdrId] = { plays: 0, last: 0 });
+    c.plays++; c.last = Date.now();
+  }
+  saveStats(true);
+}
+export function addListening(ms) { lib.stats.ms += ms; saveStats(); }
+export const playsOf = id => (lib.stats.tracks[id] || {}).plays || 0;
+export const lastPlayedOf = id => (lib.stats.tracks[id] || {}).last || 0;
+export function albumPlays(album) { return album.trackIds.reduce((n, id) => n + playsOf(id), 0); }
+export function albumLastPlayed(album) { return Math.max(0, ...album.trackIds.map(lastPlayedOf)); }

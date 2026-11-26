@@ -93,6 +93,7 @@ export async function syncArt() {
       if (pic(entry.back)) pc.back = pic(entry.back);
       if (pic(entry.disc)) pc.disc = pic(entry.disc);
       pc.booklet.push(...(entry.booklet || []).map(pic).filter(Boolean));
+      if (Array.isArray(entry.stickers) && entry.stickers.length) pc.stickers = entry.stickers;
       if (entry.obi || entry.obiScan) {
         pc.obi = { ...(entry.obi || {}) };
         if (pic(entry.obiScan)) pc.obi.image = pic(entry.obiScan);

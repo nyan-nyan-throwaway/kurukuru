@@ -1,3 +1,4 @@
+import { drawStickers } from './stickers.js';
 import { DOODLES, CASES } from './doodles.js';
 // Drawing: disc prints, obi, jewel cases, spines, case backs, the sky, LCD digits and icons.
 // A port of the desktop app's QPainter code to canvas 2D.
@@ -774,6 +775,7 @@ export function paintCaseFront(ctx, group, image, palette, night, showObi = true
     ctx.fillStyle = hg; roundRect(ctx, 9, yy, 11, 9, 2); ctx.fill(); ctx.stroke();
   }
   if (showObi && (group.album || group.artist)) paintObi(ctx, 4, 3.5, 40, 164, group.album, group.artist, group.year, palette, night, { ...(group.obi || {}), discs: group.discs });
+  if (group.stickers && group.stickers.length) drawStickers(ctx, group.stickers, group.album);
   ctx.restore();
 }
 

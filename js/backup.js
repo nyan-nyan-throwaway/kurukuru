@@ -1,6 +1,6 @@
 // Backups: your CD-Rs, obi designs, added pictures and lyrics, settings (and, if you like, imported songs) in one .zip.
 import * as db from './db.js';
-import { lib, savePending, saveCdrs, songRef, relink } from './library.js';
+import { lib, savePending, saveCdrs, songRef, relink, saveStats } from './library.js';
 import { listZip, extract, makeZip } from './zip.js';
 
 const customImages = c => [c.cover, c.back, c.disc, ...(c.booklet || []), c.obi && c.obi.image].filter(Boolean);
@@ -30,7 +30,8 @@ export async function makeBackup({ songs = false } = {}, progress = () => {}) {
     if (t) refs[id] = songRef(t);
     else if (lib.pending['ref:' + id]) refs[id] = lib.pending['ref:' + id];
   }
-  const manifest = { format: 'kurukuru-backup', version: 1, created: new Date().toISOString(), settings, cdrs: lib.cdrs, custom, lyrics, refs,
+  for (const id of Object.keys(lib.stats.tracks)) { const t = lib.tracks.get(id); if (t && !refs[id]) refs[id] = songRef(t); }
+  const manifest = { format: 'kurukuru-backup', version: 1, created: new Date().toISOString(), settings, cdrs: lib.cdrs, custom, lyrics, refs, stats: lib.stats,
                      songs: songs ? { albums: albums.map(a => ({ ...a, custom: undefined })), tracks } : null };
   files.push({ name: 'kurukuru-backup.json', data: JSON.stringify(manifest, null, 1) });
   for (const id of images) {
@@ -90,6 +91,16 @@ export async function restoreBackup(file, progress = () => {}) {
     summary.cdrs++;
   }
   for (const [id, ref] of Object.entries(manifest.refs || {})) if (!lib.tracks.has(id)) lib.pending['ref:' + id] = ref;
+  if (manifest.stats) {   // play counts: keep the higher count for each song
+    for (const [id, v] of Object.entries(manifest.stats.tracks || {})) {
+      const have = lib.stats.tracks[id];
+      if (!have || have.plays < v.plays) lib.stats.tracks[id] = v;
+    }
+    for (const [id, v] of Object.entries(manifest.stats.cdrs || {})) if (!lib.stats.cdrs[id] || lib.stats.cdrs[id].plays < v.plays) lib.stats.cdrs[id] = v;
+    lib.stats.ms = Math.max(lib.stats.ms || 0, manifest.stats.ms || 0);
+    lib.stats.since = Math.min(lib.stats.since || Date.now(), manifest.stats.since || Date.now());
+    await saveStats(true);
+  }
   await saveCdrs();
   await savePending();
   await relink();
