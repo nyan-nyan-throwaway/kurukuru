@@ -329,3 +329,5 @@ input.swatch[type=color]::-webkit-color-swatch { border: 0; border-radius: 50%; 
 .k-bar i { display: block; height: 100%; width: 0; background: var(--accent); }
 .karaoke .hw-flat { background: rgba(255,255,255,.14); color: #fff; border-color: rgba(255,255,255,.35); box-shadow: none; text-shadow: none; }
 .karaoke .hw-flat.primary { background: var(--accent); border-color: transparent; }
+.menu-item.has-it { color: var(--accent); font-weight: 700; }
+.menu-item.has-it small { color: var(--ink-soft); font-weight: 400; }
