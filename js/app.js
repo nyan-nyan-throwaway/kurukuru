@@ -19,7 +19,7 @@ const { plex } = plexApi;
 import { lyricsFor, unlockSounds, playSound, playSoundEvery, sounds, analyzeSpectrum } from './audiofx.js';
 import { storageInfo, askPersist } from './db.js';
 
-const VERSION = '2.2';
+const VERSION = '2.3';
 const $ = id => document.getElementById(id);
 
 // ---------------------------------------------------------------- settings
@@ -671,7 +671,6 @@ function renderShelf() {
   for (const [id, on] of [['shelfAlbums', tab === 'albums'], ['shelfCdrs', tab === 'cdrs'], ['shelfStats', tab === 'stats']]) {
     $(id).classList.toggle('lit', on); $(id).querySelector('.lamp').classList.toggle('lit', on);
   }
-  $('newCdr').hidden = tab !== 'cdrs';
   document.querySelector('.shelf-tools').hidden = tab === 'stats';
   if (tab === 'stats') { renderStats(shelf); return; }
   $('search').placeholder = tab === 'cdrs' ? 'Search CD-Rs' : 'Search albums';
@@ -717,7 +716,7 @@ function renderShelf() {
     el.className = 'sleeve blank';
     el.innerHTML = '<canvas></canvas><b>&nbsp;</b><span>&nbsp;</span>';
     el.redraw = () => { const c = el.firstChild; const ctx = sizeSleeve(c); paintBlankSleeve(ctx, 100); };
-    el.addEventListener('click', () => { playSound('press'); openCdrEditor(null, null); });
+    el.addEventListener('click', newCdrMenu);
     shelf.appendChild(el); lazy.observe(el);
   }
   let row = null;
@@ -1219,13 +1218,14 @@ $('playAlbum').onclick = () => {
 };
 $('openBooklet').onclick = openBooklet;
 $('cdrAdd').onclick = () => { playSound('press'); const c = findCdr(shownCdr); if (c) openSongPicker(c); };
-$('newCdr').onclick = () => {
+// The wallet's "+ burn a new one!" pocket.
+function newCdrMenu() {
   playSound('press');
   menu('NEW CD-R', [
     { label: 'Burn me a mix…', note: 'Kurukuru picks the songs and decorates the disc', run: mixMenu },
     { label: 'A blank CD-R', note: 'you pick the songs', run: () => openCdrEditor(null, null) },
   ]);
-};
+}
 
 // ---------------------------------------------------------------- burn me a mix
 

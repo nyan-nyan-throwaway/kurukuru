@@ -263,7 +263,6 @@ input.swatch[type=color]::-webkit-color-swatch { border: 0; border-radius: 50%; 
 .pages img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; box-shadow: 2px 3px 0 rgba(0,0,0,.15); }
 .pages button { position: absolute; top: -6px; right: -6px; width: 26px; height: 26px; border-radius: 50%; border: 0; background: #c2416b; color: #fff; font-size: 15px; }
 .pages figcaption { font-size: 10.5px; color: var(--ink-soft); text-align: center; margin-top: 2px; }
-.shelf-tools #newCdr { flex: none; }
 
 .tracks li.disc-head { min-height: 30px; padding: 10px 10px 4px; cursor: default; background: none !important; gap: 8px; align-items: baseline;
   border-top: 1px dashed var(--recess-edge-t); }
