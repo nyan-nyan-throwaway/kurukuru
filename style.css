@@ -348,3 +348,20 @@ input.swatch[type=color]::-webkit-color-swatch { border: 0; border-radius: 50%; 
 .shelf-tools { flex-wrap: wrap; }
 .shelf-tools #search { flex: 1 1 100%; }
 .shelf-tools .hw-flat { flex: 1 1 0; white-space: nowrap; }
+
+/* ---------------------------------------------------------------- random pick */
+#shelf [data-key].roulette canvas { transform: translateY(-5px) scale(1.04); filter: drop-shadow(0 0 10px var(--accent)) brightness(1.08); transition: none; }
+#shelf [data-key].roulette.spine { transform: translateY(-8px); filter: drop-shadow(0 0 8px var(--accent)); }
+#shelf [data-key].picked canvas { animation: picked .55s ease-out 2; filter: drop-shadow(0 0 14px var(--accent)); }
+@keyframes picked { 0% { transform: translateY(0) scale(1); } 40% { transform: translateY(-10px) scale(1.08); } 100% { transform: translateY(0) scale(1); } }
+
+/* ---------------------------------------------------------------- display mode */
+.display { position: fixed; inset: 0; z-index: 70; background: #120d22; }
+.display canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); box-sizing: border-box; }
+.disp-controls { position: absolute; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 14px); transform: translate(-50%, 12px);
+  display: flex; gap: 10px; padding: 8px 12px; border-radius: 22px; background: rgba(20,12,36,.72); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  opacity: 0; pointer-events: none; transition: opacity .3s, transform .3s; }
+.display.awake .disp-controls { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
+.disp-controls .hw-flat { min-width: 54px; background: rgba(255,255,255,.14); color: #fff; border-color: rgba(255,255,255,.3); box-shadow: none; text-shadow: none; font-size: 15px; }
+.disp-controls .hw-flat.primary { background: var(--accent); border-color: transparent; }

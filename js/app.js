@@ -1,6 +1,7 @@
 // Kurukuru CD for iPhone: the app.
 import { STICKERS, stickersOf } from './stickers.js';
 import { SHELLS, applyShell, shellPalette, shellTheme } from './shells.js';
+import { DisplayView } from './display.js';
 import { MIX_KINDS, MIX_LENGTHS, makeMix, mixLook } from './mixer.js';
 import { toHsv } from './theme.js';
 import { THEME, setTheme, albumScheme, autoThemeName, SCHEME_KEYS, albumPalette, mix, rgba, hex, parse, smooth, crc32, darker } from './theme.js';
@@ -19,7 +20,7 @@ const { plex } = plexApi;
 import { lyricsFor, unlockSounds, playSound, playSoundEvery, sounds, analyzeSpectrum } from './audiofx.js';
 import { storageInfo, askPersist } from './db.js';
 
-const VERSION = '2.3';
+const VERSION = '2.5';
 const $ = id => document.getElementById(id);
 
 // ---------------------------------------------------------------- settings
@@ -49,6 +50,7 @@ let energy = 0;
 let scheme = { from: null, to: null, t: 1, source: [[], null] };
 
 const disc = new DiscView($('disc'));
+let activePage = 'now', displayClosed = false;   // display mode: which page is showing; CLOSE keeps it away until the phone is upright again
 const lcd = new LcdView($('lcd'), state);
 const sky = new Sky();
 disc.setMode(settings.disc);
@@ -847,6 +849,8 @@ function openCdr(id, { keepFlip = false } = {}) {
 }
 
 function showPage(name) {
+  activePage = name;
+  checkDisplay();
   for (const p of ['now', 'library', 'album']) $('page-' + p).hidden = p !== name;
   document.querySelectorAll('.tab[data-page]').forEach(t => t.classList.toggle('lit', t.dataset.page === name || (name === 'album' && t.dataset.page === 'library')));
   document.querySelectorAll('.tab[data-page] .lamp').forEach(l => l.classList.toggle('lit', l.parentElement.classList.contains('lit')));
@@ -1120,6 +1124,7 @@ $('plexDisconnect').onclick = async () => {
 
 async function openSettings() {
   $('setShell').value = settings.shell; $('setTheme').value = settings.theme; $('setDisc').value = settings.disc; $('setObi').checked = settings.obi;
+  $('setDisplay').checked = settings.display !== false;
   $('setSky').checked = settings.sky; $('setMeter').checked = settings.meter; $('setLyrics').checked = settings.lyrics;
   $('setSounds').checked = settings.sounds; $('setFx').value = settings.fx;
   $('version').textContent = `Kurukuru CD for iPhone · version ${VERSION}`;
@@ -1136,7 +1141,7 @@ async function openSettings() {
 }
 function settingChanged() {
   Object.assign(settings, { shell: $('setShell').value, theme: $('setTheme').value, disc: $('setDisc').value, obi: $('setObi').checked, sky: $('setSky').checked,
-    meter: $('setMeter').checked, lyrics: $('setLyrics').checked, sounds: $('setSounds').checked, fx: +$('setFx').value });
+    meter: $('setMeter').checked, display: $('setDisplay').checked, lyrics: $('setLyrics').checked, sounds: $('setSounds').checked, fx: +$('setFx').value });
   saveSettings();
   state.showMeter = settings.meter; state.showLyrics = settings.lyrics;
   sounds.enabled = settings.sounds; sounds.volume = settings.fx / 100;
@@ -1144,7 +1149,7 @@ function settingChanged() {
   if (!(album && album.disc)) disc.setMode(settings.disc);
   applyTheme();
 }
-for (const id of ['setShell', 'setTheme', 'setDisc', 'setObi', 'setSky', 'setMeter', 'setLyrics', 'setSounds', 'setFx']) $(id).addEventListener('change', settingChanged);
+for (const id of ['setShell', 'setTheme', 'setDisc', 'setObi', 'setSky', 'setMeter', 'setDisplay', 'setLyrics', 'setSounds', 'setFx']) $(id).addEventListener('change', settingChanged);
 $('setFx').addEventListener('change', () => playSound('press'));
 $('persistButton').onclick = async () => { const ok = await askPersist(); toast(ok ? 'Your music is marked to be kept.' : 'iPhone didn’t allow it yet. It usually does once the app is on your Home Screen.'); openSettings(); };
 $('openSettings').onclick = () => { playSound('press'); openSettings(); };
@@ -1218,6 +1223,91 @@ $('playAlbum').onclick = () => {
 };
 $('openBooklet').onclick = openBooklet;
 $('cdrAdd').onclick = () => { playSound('press'); const c = findCdr(shownCdr); if (c) openSongPicker(c); };
+// ---------------------------------------------------------------- random pick
+// RANDOM: a quick roulette along the shelf, then it opens whatever it lands on. It picks from
+// what the shelf is showing (so a search narrows it down), and avoids what you just had.
+let picking = false;
+const recentPicks = [];
+$('randomPick').onclick = async () => {
+  if (picking) return;
+  unlockSounds();
+  const cards = [...document.querySelectorAll('#shelf [data-key]')].filter(el => !el.closest('.recent'));
+  if (!cards.length) { toast(settings.shelfTab === 'cdrs' ? 'Burn a CD-R first!' : 'Add some music first!'); return; }
+  const playingKey = current && (playingCdr ? 'cdr:' + playingCdr : current.albumKey);
+  let pool = cards.filter(el => el.dataset.key !== playingKey && !recentPicks.includes(el.dataset.key));
+  if (!pool.length) pool = cards.filter(el => el.dataset.key !== playingKey);
+  if (!pool.length) pool = cards;
+  const winner = pool[Math.floor(Math.random() * pool.length)];
+  picking = true;
+  playSound('press');
+  // flicker across the shelf, slowing down, then land
+  const hops = Math.min(14, 6 + cards.length);
+  let last = null;
+  for (let i = 0; i < hops; i++) {
+    let el = i === hops - 1 ? winner : cards[Math.floor(Math.random() * cards.length)];
+    if (el === last && cards.length > 1) el = cards[(cards.indexOf(el) + 1) % cards.length];
+    if (last) last.classList.remove('roulette');
+    el.classList.add('roulette'); last = el;
+    if (i > hops - 5) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    playSound('scrub');
+    await new Promise(r => setTimeout(r, 55 + i * i * 2.2));
+  }
+  winner.classList.remove('roulette');
+  winner.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  winner.classList.add('picked');
+  playSound('burned');
+  recentPicks.push(winner.dataset.key); if (recentPicks.length > Math.min(5, Math.floor(cards.length / 2))) recentPicks.shift();
+  await new Promise(r => setTimeout(r, 900));
+  winner.classList.remove('picked');
+  picking = false;
+  winner.click();
+};
+
+// ---------------------------------------------------------------- display mode
+// Turn the phone sideways on Now Playing for a big clock-and-disc display; turn it back to leave.
+
+const displayView = new DisplayView($('dispCanvas'), disc, state, () => {
+  const ms = audio.currentTime * 1000, lines = state.lyrics || [];
+  let lyric = '';
+  for (let k = 0; k < lines.length && lines[k][0] <= ms; k++) lyric = lines[k][1];
+  return {
+    title: current ? current.title : '', artist: current ? current.artist : '', album: current ? current.album : '',
+    cover: disc.disc.image || null, lyric, position: ms,
+    duration: isFinite(audio.duration) ? audio.duration * 1000 : state.duration || 0, playing: state.state === 'play',
+  };
+});
+const sideways = window.matchMedia('(orientation: landscape) and (max-height: 600px)');
+let wakeLock = null, awakeTimer = 0;
+async function keepScreenOn(on) {
+  try {
+    if (on && !wakeLock && navigator.wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); }
+    else if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
+  } catch { wakeLock = null; }
+}
+function setDisplay(on) {
+  if (on === !$('display').hidden) return;
+  $('display').hidden = !on;
+  keepScreenOn(on);
+  if (on) { wakeControls(); playSound('case'); }
+}
+function checkDisplay() {
+  setDisplay(settings.display !== false && sideways.matches && activePage === 'now' && !displayClosed);
+}
+sideways.addEventListener('change', () => { if (!sideways.matches) displayClosed = false; checkDisplay(); });
+function wakeControls() {
+  $('display').classList.add('awake');
+  clearTimeout(awakeTimer);
+  awakeTimer = setTimeout(() => $('display').classList.remove('awake'), 3500);
+}
+$('dispCanvas').addEventListener('click', () => {
+  if ($('display').classList.contains('awake')) { $('display').classList.remove('awake'); clearTimeout(awakeTimer); } else wakeControls();
+});
+$('dispPrev').onclick = () => { wakeControls(); step(-1); };
+$('dispNext').onclick = () => { wakeControls(); step(1); };
+$('dispPlay').onclick = () => { wakeControls(); togglePlay(); };
+$('dispClose').onclick = () => { playSound('press'); displayClosed = true; setDisplay(false); };
+document.addEventListener('visibilitychange', () => { if (!document.hidden && !$('display').hidden) keepScreenOn(true); });
+
 // The wallet's "+ burn a new one!" pocket.
 function newCdrMenu() {
   playSound('press');
@@ -2009,6 +2099,7 @@ function frame(now) {
     lcd.draw(); frame.lcdDirty = state.title + state.state + state.lidOpen + state.shuffle + state.repeat + state.trackCount + state.disc;
   }
   drawKaraoke();
+  if (!$('display').hidden) displayView.draw(now);
   if (!dragging && current) {
     const d = isFinite(audio.duration) ? audio.duration : (state.duration / 1000 || 0);
     showBar(d ? audio.currentTime / d : 0);
